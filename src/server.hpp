@@ -1,6 +1,7 @@
 #ifndef SERVER_HPP
 #define SERVER_HPP
 #pragma once
+
 #include <string>
 #include <map>
 #include "sockets/parseInputRequest.hpp"
