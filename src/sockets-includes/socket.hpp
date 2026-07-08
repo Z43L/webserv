@@ -6,6 +6,14 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include "../server.hpp"
+#define MAX_EVENTS 64
+#define BUFFER_SIZE 4096
+
+struct ClientSession {
+    std::string read_buffer;
+    std::string write_buffer;
+    bool        is_response_ready;
+};
 
 // Enumeración para el estado de la conexión 
 enum e_socket_state {
@@ -25,7 +33,7 @@ private:
     std::string _readBuffer;   // Buffer para almacenar lo que llega
     std::string _writeBuffer;  // Buffer para almacenar lo que se va a enviar
     bool _isNonBlocking;       // Bandera de modo no bloqueante
-
+    struct sockaddr_in addr;
     bool setNonBlocking(int fd);
 
 public:
@@ -34,15 +42,15 @@ public:
     Socket(int fd, struct sockaddr_in addr);
     ~Socket();
 
-    // Métodos para socket de escucha (Listening socket)
-    bool bindAndListen(const std::string& ip, int port, int backlog);
+    int bindAndListen(const std::string& ip, int port, int backlog);
     Socket* acceptConnection();
 
-    // Métodos para E/S (Client socket)
-    ssize_t readData();   // Lee hacia _readBuffer
-    ssize_t writeData();  // Escribe desde _writeBuffer
+    std::map<int, ClientSession> active_clients;
+    struct epoll_event events[MAX_EVENTS];
+    ssize_t readData(); 
+    ssize_t writeData()  
     void closeSocket();
-
+    int initMonohilo(int fd);
     
     int getFd() const;
     e_socket_state getState() const;
