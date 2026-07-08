@@ -1,3 +1,6 @@
+#ifndef REQUEST_TPP
+#define REQUEST_TPP
+#include "../server.hpp"
 template <typename T>
 class request : public ParseInputRequest, public Securiti {
     private:
@@ -7,7 +10,7 @@ class request : public ParseInputRequest, public Securiti {
         request(const T& config);
         ~request();
 
-        // Valida si la ruta solicitada coincide con las reglas del archivo de configuración (rules/routes)
+       
         bool isRouterCorrect(const std::string& url);
 };
 

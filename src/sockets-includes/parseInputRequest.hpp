@@ -13,6 +13,7 @@ class ParseInputRequest {
         OPTIONS = 7575
     } t_method;
     private:
+        std::string rawInput;
         t_method method;
         std::string type;
         std::string url;

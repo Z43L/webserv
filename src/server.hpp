@@ -1,6 +1,7 @@
 #ifndef SERVER_HPP
 #define SERVER_HPP
 #pragma once
+
 #include <string>
 #include <map>
 #include "sockets/parseInputRequest.hpp"
@@ -13,6 +14,7 @@ class server{
     private:
         std::string cgiFile;
         std::string cgiPath;
+        std::map<int, std::string> _client_buffers;
         std::map<std::string T> responseParser;
         std::map<std::string T> requestParser;
         std::map<std::string T > cgiParser; 
