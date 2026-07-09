@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #1e1e1e; color: #d4d4d4; font-family: monospace; padding: 20px; }
+        .vim-bar { position: fixed; bottom: 0; width: 100%; background: #333; color: white; padding: 5px; }
+    </style>
+</head>
+<body>
+    <pre>
+    --- INTRODUCCION A WEBSERVER C++98 ---
+    El primer paso es entender que C++98 requiere 
+    gestión manual de memoria y el uso de la API 
+    de sockets de POSIX.
+    </pre>
+    <div class="vim-bar">-- NORMAL -- Escribe :q para volver</div>
+    <script>
+        document.addEventListener('keydown', (e) => {
+            if (e.key === ':') {
+                let cmd = prompt(":");
+                if (cmd === 'q') window.location.href = 'index.html';
+            }
+        });
+    </script>
+</body>
+</html>
