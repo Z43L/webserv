@@ -1,4 +1,4 @@
-#include "../sockets-includes/parseInputRequest.hpp"
+#include "parseInputRequest.hpp"
 
 ParseInputRequest::ParseInputRequest() : method(static_cast<t_method>(0)) {
   type = "";

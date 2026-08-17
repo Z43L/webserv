@@ -1,9 +1,9 @@
 #ifndef PARSEINPUTREQUEST_HPP
 #define PARSEINPUTREQUEST_HPP
 
+#include <cstdlib>
 #include <iostream>
 #include <string>
-
 // template <typename T>
 class ParseInputRequest {
   typedef enum e_method {

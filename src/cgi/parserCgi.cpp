@@ -26,6 +26,9 @@ std::string Parsercgi::BufferRead(ssize_t fd) {
 
 std::map<std::string, std::string> Parsercgi::ReadMapper(int calculatorPosition,
                                                          int bufferReadLength) {
+
+  (void)calculatorPosition;
+  (void)bufferReadLength;
   std::map<std::string, std::string> mapper;
 
   int file_fd = open(this->filePath.c_str(), O_RDONLY);
@@ -54,9 +57,12 @@ std::map<std::string, std::string> Parsercgi::ReadMapper(int calculatorPosition,
   size_t pos = 0;
   while (pos < accumulator.length()) {
     size_t next_line = accumulator.find('\n', pos);
-    std::string line = (next_line == std::string::npos)
-                           ? accumulator.substr(pos)
-                           : accumulator.substr(pos, next_line - pos);
+    std::string line;
+    if (next_line == std::string::npos) {
+      line = accumulator.substr(pos);
+    } else {
+      line = accumulator.substr(pos, next_line - pos);
+    }
 
     if (!line.empty()) {
       size_t space_pos = line.find(' ');

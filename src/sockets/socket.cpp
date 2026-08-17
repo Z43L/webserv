@@ -1,5 +1,6 @@
 #include "../sockets-includes/socket.hpp"
-#include "../sockets-includes/parseInputRequest.hpp"
+#include "../request/parseInputRequest.hpp"
+#include "../response/parseResponse.hpp"
 #include <cstring>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -16,7 +17,7 @@ Socket::Socket(int fd, struct sockaddr_in addr)
 Socket::~Socket() { this->closeSocket(); }
 
 bool Socket::setNonBlocking(int fd) {
-  if (fcntl(fd, F_SETFL, SOCK_NONBLOCK) == -1) {
+  if (fcntl(fd, F_SETFL, O_NONBLOCK) == -1) {
     return false;
   }
   return true;
@@ -112,8 +113,6 @@ int Socket::initMonohilo(int listenFd) {
 
         struct epoll_event client_ev;
         std::memset(&client_ev, 0, sizeof(client_ev));
-        // EPOLLIN para recibir peticiones, EPOLLOUT para responder, EPOLLET
-        // para Edge Triggered
         client_ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
         client_ev.data.fd = client_fd;
 
@@ -127,10 +126,7 @@ int Socket::initMonohilo(int listenFd) {
         active_clients[client_fd] = session;
         std::cout << "Nueva conexión aceptada. Socket FD: " << client_fd
                   << std::endl;
-      }
-      // Caso B: Actividad en un socket de cliente
-      else {
-        // Sub-caso B.1: El socket está listo para LECTURA (Recibir datos)
+      } else {
         if (events[i].events & EPOLLIN) {
           char temp_buffer[BUFFER_SIZE];
           ssize_t bytes_recv =
@@ -145,25 +141,60 @@ int Socket::initMonohilo(int listenFd) {
               ParseInputRequest parser;
               parser.parse(session.read_buffer);
 
-              // Lógica de simulación de respuesta HTTP básica
-              session.write_buffer =
-                  "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
+              std::string url = parser.getUrl();
+
+              if (url.empty() || url == "/") {
+                url = "/index.html";
+              }
+
+              // Limpiar query string y fragmento
+              size_t qmark = url.find('?');
+              if (qmark != std::string::npos) {
+                url = url.substr(0, qmark);
+              }
+              size_t hash = url.find('#');
+              if (hash != std::string::npos) {
+                url = url.substr(0, hash);
+              }
+
+              // Construir ruta física: ./web/ + url
+              std::string filePath = "./web" + url;
+
+              if (filePath.find("..") != std::string::npos) {
+                filePath = "./web/404.html";
+              }
+
+              ParseResponse responseBuilder;
+              responseBuilder.setHeader("Server", "webserv/1.0");
+
+              if (ParseResponse::fileExists(filePath)) {
+                responseBuilder.setBodyFromFile(filePath);
+              } else {
+                std::string notFoundPath = "./web/404.html";
+                if (ParseResponse::fileExists(notFoundPath)) {
+                  responseBuilder.setStatus(404, "Not Found");
+                  responseBuilder.setBodyFromFile(notFoundPath);
+                } else {
+                  responseBuilder.setStatus(404, "Not Found");
+                  responseBuilder.setBody(
+                      "<html><body><h1>404 Not Found</h1></body></html>");
+                }
+              }
+
+              session.write_buffer = responseBuilder.build();
               session.is_response_ready = true;
               session.read_buffer.clear();
             }
           } else if (bytes_recv == 0) {
-            // El cliente cerró la conexión
             epoll_ctl(epollFd, EPOLL_CTL_DEL, currentFd, NULL);
             close(currentFd);
             active_clients.erase(currentFd);
             continue;
           } else {
-            // Error de lectura o cola vacía (EAGAIN/EWOULDBLOCK). No usamos
-            // errno, solo dejamos pasar el evento.
+            std::cout << "error de lectura " << std::endl;
           }
         }
 
-        // Sub-caso B.2: El socket está listo para ESCRITURA (Enviar respuesta)
         if (events[i].events & EPOLLOUT) {
           std::map<int, ClientSession>::iterator it =
               active_clients.find(currentFd);
