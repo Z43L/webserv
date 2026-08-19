@@ -8,13 +8,13 @@ CXXFLAGS	=	-Wall -Wextra -Werror -std=c++98 -MMD -MP
 # Directorios
 SRC_DIR		=	src
 OBJ_DIR		=	obj
-INC_DIRS	=	$(SRC_DIR) 				$(SRC_DIR)/cgi-includes 				$(SRC_DIR)/request 				$(SRC_DIR)/response 				$(SRC_DIR)/sockets-includes
+INC_DIRS	=	$(SRC_DIR) 				$(SRC_DIR)/cgi-includes 				$(SRC_DIR)/request 				$(SRC_DIR)/response 				$(SRC_DIR)/sockets-includes 				$(SRC_DIR)/confile
 
 # Includes con -I
 INCLUDES	=	$(addprefix -I, $(INC_DIRS))
 
 # Archivos fuente
-SRCS		=	$(SRC_DIR)/main.cpp 				$(SRC_DIR)/sockets/socket.cpp 				$(SRC_DIR)/request/parseInputRequest.cpp 				$(SRC_DIR)/response/parseResponse.cpp 				$(SRC_DIR)/cgi/parserCgi.cpp
+SRCS		=	$(SRC_DIR)/main.cpp 				$(SRC_DIR)/sockets/socket.cpp 				$(SRC_DIR)/request/parseInputRequest.cpp 				$(SRC_DIR)/response/parseResponse.cpp 				$(SRC_DIR)/cgi/parserCgi.cpp 				$(SRC_DIR)/confile/configurationFileParse.cpp
 
 # Archivos objeto
 OBJS		=	$(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SRCS))
