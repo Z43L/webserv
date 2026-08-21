@@ -1,6 +1,7 @@
 #include "../sockets-includes/socket.hpp"
 #include "../request/parseInputRequest.hpp"
 #include "../response/parseResponse.hpp"
+#include <arpa/inet.h>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -8,11 +9,11 @@
 
 Socket::Socket()
     : _fd(-1), _port(0), _ip(""), _state(SOCKET_LISTENING),
-      _isNonBlocking(false) {}
+      _isNonBlocking(false), _docRoot("./web"), _indexFile("index.html") {}
 
 Socket::Socket(int fd, struct sockaddr_in addr)
     : _fd(fd), _port(0), _ip(""), _state(SOCKET_READING), _isNonBlocking(true),
-      addr(addr) {}
+      addr(addr), _docRoot("./web"), _indexFile("index.html") {}
 
 Socket::~Socket() { this->closeSocket(); }
 
@@ -24,9 +25,8 @@ bool Socket::setNonBlocking(int fd) {
 }
 
 int Socket::bindAndListen(const std::string &ip, int port, int backlog) {
-  (void)ip; // Evitar advertencia de variable no utilizada (puede expandirse si
-            // se requiere binding a IP específica)
   this->_port = port;
+  this->_ip = ip;
 
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd == -1) {
@@ -46,7 +46,15 @@ int Socket::bindAndListen(const std::string &ip, int port, int backlog) {
   struct sockaddr_in address;
   std::memset(&address, 0, sizeof(address));
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = INADDR_ANY;
+  // "" o "0.0.0.0" siguen significando "escuchar en todas las interfaces";
+  // cualquier otra IP se resuelve con inet_pton en vez de ignorarla.
+  if (ip.empty() || ip == "0.0.0.0") {
+    address.sin_addr.s_addr = INADDR_ANY;
+  } else if (inet_pton(AF_INET, ip.c_str(), &address.sin_addr) != 1) {
+    std::cerr << "Invalid host address: " << ip << std::endl;
+    close(fd);
+    return -1;
+  }
   address.sin_port = htons(port);
   this->addr = address;
 
@@ -143,8 +151,9 @@ int Socket::initMonohilo(int listenFd) {
 
               std::string url = parser.getUrl();
 
+              // _indexFile viene de "index" en confile.conf (por defecto "index.html")
               if (url.empty() || url == "/") {
-                url = "/index.html";
+                url = "/" + this->_indexFile;
               }
 
               // Limpiar query string y fragmento
@@ -157,11 +166,12 @@ int Socket::initMonohilo(int listenFd) {
                 url = url.substr(0, hash);
               }
 
-              // Construir ruta física: ./web/ + url
-              std::string filePath = "./web" + url;
+              // Construir ruta física: _docRoot ("root" en confile.conf) + url
+              std::string filePath = this->_docRoot + url;
+              std::string notFoundPath = this->_docRoot + "/404.html";
 
               if (filePath.find("..") != std::string::npos) {
-                filePath = "./web/404.html";
+                filePath = notFoundPath;
               }
 
               ParseResponse responseBuilder;
@@ -170,7 +180,6 @@ int Socket::initMonohilo(int listenFd) {
               if (ParseResponse::fileExists(filePath)) {
                 responseBuilder.setBodyFromFile(filePath);
               } else {
-                std::string notFoundPath = "./web/404.html";
                 if (ParseResponse::fileExists(notFoundPath)) {
                   responseBuilder.setStatus(404, "Not Found");
                   responseBuilder.setBodyFromFile(notFoundPath);
@@ -242,3 +251,5 @@ std::string &Socket::getReadBuffer() { return _readBuffer; }
 void Socket::setWriteBuffer(const std::string &response) {
   _writeBuffer = response;
 }
+void Socket::setDocRoot(const std::string &docRoot) { _docRoot = docRoot; }
+void Socket::setIndexFile(const std::string &indexFile) { _indexFile = indexFile; }

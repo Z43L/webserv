@@ -36,6 +36,8 @@ private:
   std::string _writeBuffer; // Buffer para almacenar lo que se va a enviar
   bool _isNonBlocking;      // Bandera de modo no bloqueante
   struct sockaddr_in addr;
+  std::string _docRoot;     // Raiz de documentos servidos
+  std::string _indexFile;   // Archivo servido para "/"
   bool setNonBlocking(int fd);
 
 public:
@@ -45,6 +47,10 @@ public:
 
   int bindAndListen(const std::string &ip, int port, int backlog);
   Socket *acceptConnection();
+
+  // Llamados desde main.cpp con los valores de ServerConfig antes de bindAndListen.
+  void setDocRoot(const std::string &docRoot);
+  void setIndexFile(const std::string &indexFile);
 
   std::map<int, ClientSession> active_clients;
   struct epoll_event events[MAX_EVENTS];
