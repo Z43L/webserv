@@ -30,6 +30,9 @@ enum e_socket_state {
 class Socket {
 private:
   int _fd;
+  // fd del epoll del bucle principal. Se guarda como miembro porque el hijo
+  // del CGI tiene que cerrarlo tras el fork (ver Parsercgi::execute).
+  int _epollFd;
   int _port;
   std::string _ip;
   e_socket_state _state;
@@ -46,6 +49,8 @@ private:
 
   std::string handleReadRequest(const std::string &rawRequest);
   std::string routeRequest(const std::string &rawRequest);
+  // 404 servido con la error_page configurada si existe.
+  std::string buildNotFound();
 
 public:
   Socket();

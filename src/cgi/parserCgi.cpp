@@ -1,10 +1,13 @@
 #include "../cgi-includes/parserCgi.hpp"
 #include "../request/parseInputRequest.hpp"
+#include "../response/parseResponse.hpp"
 #include <arpa/inet.h>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sstream>
 #include <stdlib.h>
@@ -14,15 +17,23 @@
 
 // Returns the value of header `name` from rawRequest (case-insensitive),
 // or "" if not present. Used to forward HTTP_* environment variables.
+// Only the header block is scanned: the request line has no header of its own
+// and a line of the body must never be mistaken for one.
 static std::string getHeaderValue(const std::string &raw, const std::string &name) {
   std::string lowerName = name;
   for (size_t i = 0; i < lowerName.size(); ++i)
     lowerName[i] = static_cast<char>(tolower(lowerName[i]));
 
-  size_t pos = 0;
-  while (pos < raw.size()) {
+  size_t limit = raw.find("\r\n\r\n");
+  if (limit == std::string::npos) limit = raw.size();
+
+  size_t pos = raw.find("\r\n");
+  if (pos == std::string::npos) return "";
+  pos += 2;
+
+  while (pos < limit) {
     size_t eol = raw.find("\r\n", pos);
-    if (eol == std::string::npos) eol = raw.size();
+    if (eol == std::string::npos || eol > limit) eol = limit;
     std::string line = raw.substr(pos, eol - pos);
     pos = eol + 2;
 
@@ -54,17 +65,14 @@ static std::string extractBody(const std::string &raw) {
   return rawBody;
 }
 
-static std::string readAll(int fd) {
-  char buf[BUFFER_SIZE];
-  std::string out;
-  while (true) {
-    ssize_t n = read(fd, buf, sizeof(buf));
-    if (n > 0)
-      out.append(buf, n);
-    else
-      break;
-  }
-  return out;
+static std::string cgiError(int code, const std::string &message) {
+  ParseResponse r;
+  r.setStatus(code, message);
+  r.setHeader("Content-Type", "text/html");
+  std::ostringstream body;
+  body << "<html><body><h1>" << code << " " << message << "</h1></body></html>";
+  r.setBody(body.str());
+  return r.build();
 }
 
 // Build a null-terminated envp suitable for execve from a vector of
@@ -150,7 +158,10 @@ std::string Parsercgi::execute(const std::string &interpreter,
                               const std::string &rawRequest,
                               const std::string &queryString,
                               const std::string &serverHost,
-                              int serverPort) {
+                              int serverPort,
+                              const std::vector<int> &fdsToClose) {
+  // Método y URL salen de la request line, no de las cabeceras.
+  std::string reqMethod;
   std::string urlPath;
   size_t rl = rawRequest.find("\r\n");
   if (rl != std::string::npos) {
@@ -158,16 +169,34 @@ std::string Parsercgi::execute(const std::string &interpreter,
     size_t s1 = line.find(' ');
     size_t s2 = (s1 == std::string::npos) ? std::string::npos
                                           : line.find(' ', s1 + 1);
+    if (s1 != std::string::npos)
+      reqMethod = line.substr(0, s1);
     if (s1 != std::string::npos && s2 != std::string::npos)
       urlPath = line.substr(s1 + 1, s2 - s1 - 1);
     else if (s1 != std::string::npos)
       urlPath = line.substr(s1 + 1);
   }
+  if (reqMethod.empty())
+    reqMethod = "POST";
+
+  // SCRIPT_NAME es la ruta URL sin query; REQUEST_URI conserva la original.
+  std::string scriptUrl = urlPath;
+  size_t qm = scriptUrl.find('?');
+  if (qm != std::string::npos)
+    scriptUrl = scriptUrl.substr(0, qm);
+
+  // El body se des-chunkea aquí, antes del fork, porque el hijo necesita su
+  // tamaño real para CONTENT_LENGTH: una petición chunked no trae cabecera
+  // Content-Length, y un CGI conforme a CGI/1.1 leería 0 bytes de stdin.
+  std::string body = extractBody(rawRequest);
+  std::ostringstream clSS;
+  clSS << body.size();
+  std::string contentLength = clSS.str();
 
   int inPipe[2];
   int outPipe[2];
   if (pipe(inPipe) == -1 || pipe(outPipe) == -1)
-    return std::string();
+    return cgiError(500, "Internal Server Error");
   int inRead = inPipe[0];
   int inWrite = inPipe[1];
   int outRead = outPipe[0];
@@ -179,7 +208,7 @@ std::string Parsercgi::execute(const std::string &interpreter,
     close(inWrite);
     close(outRead);
     close(outWrite);
-    return std::string();
+    return cgiError(500, "Internal Server Error");
   }
 
   if (pid == 0) {
@@ -191,21 +220,21 @@ std::string Parsercgi::execute(const std::string &interpreter,
     close(inRead);
     close(outWrite);
 
-    std::string reqMethod = getHeaderValue(rawRequest, "REQUEST_METHOD");
-    if (reqMethod.empty()) reqMethod = "POST";
+    // Los fds del servidor se heredan en el fork. Hay que cerrarlos a mano:
+    // el subject solo permite fcntl(fd, F_SETFL, O_NONBLOCK), así que no
+    // podemos marcarlos FD_CLOEXEC.
+    for (size_t i = 0; i < fdsToClose.size(); ++i) {
+      if (fdsToClose[i] > 2)
+        close(fdsToClose[i]);
+    }
+
     std::string contentType = getHeaderValue(rawRequest, "Content-Type");
-    std::string contentLength = getHeaderValue(rawRequest, "Content-Length");
     std::string hostHeader = getHeaderValue(rawRequest, "Host");
     std::string serverProtocol = "HTTP/1.1";
 
     std::string queryEnv = queryString;
 
-    // Strip query from script path for SCRIPT_NAME; full URL goes to
-    // REQUEST_URI. PATH_INFO is the portion of the URL after SCRIPT_NAME
-    // (typically empty for our routes); we set it to "/" so CGI handlers
-    // that check getenv("PATH_INFO") still see a valid value.
-    std::string scriptName = scriptPath;
-    std::string pathInfo = "/";
+    std::string scriptName = scriptUrl;
 
     std::ostringstream portSS;
   portSS << serverPort;
@@ -250,11 +279,23 @@ std::string Parsercgi::execute(const std::string &interpreter,
 
     char **envp = buildEnvp(env);
 
+    // El CGI debe ejecutarse en el directorio del script para que sus accesos
+    // por ruta relativa funcionen; tras el chdir el script se referencia como
+    // "./<fichero>".
+    std::string scriptFile = scriptPath;
+    size_t slash = scriptPath.rfind('/');
+    if (slash != std::string::npos) {
+      std::string scriptDir = scriptPath.substr(0, slash);
+      scriptFile = scriptPath.substr(slash + 1);
+      if (!scriptDir.empty())
+        chdir(scriptDir.c_str());
+    }
+
     std::vector<std::string> args;
     if (!interpreter.empty()) {
       args.push_back(interpreter);
     }
-    args.push_back(scriptPath);
+    args.push_back("./" + scriptFile);
     char **argv = new char *[args.size() + 1];
     for (size_t i = 0; i < args.size(); ++i)
       argv[i] = strdup(args[i].c_str());
@@ -273,20 +314,118 @@ std::string Parsercgi::execute(const std::string &interpreter,
   close(inRead);
   close(outWrite);
 
-  std::string body = extractBody(rawRequest);
-  ssize_t written = 0;
-  while (written < static_cast<ssize_t>(body.size())) {
-    ssize_t n = write(inWrite, body.data() + written, body.size() - written);
-    if (n <= 0) break;
-    written += n;
-  }
-  close(inWrite);
+  // Los dos pipes se atienden a la vez con un solo poll(). Escribir el body
+  // entero antes de leer la salida provoca un abrazo mortal: el CGI llena su
+  // pipe de stdout (64 KB) y se bloquea, deja de leer stdin, el pipe de
+  // entrada se llena y el servidor se bloquea también.
+  fcntl(inWrite, F_SETFL, O_NONBLOCK);
+  fcntl(outRead, F_SETFL, O_NONBLOCK);
 
-  std::string out = readAll(outRead);
+  // Un body vacío se señaliza cerrando stdin del CGI de inmediato: el EOF es
+  // lo que hace terminar a los CGI que leen hasta el final.
+  if (body.empty()) {
+    close(inWrite);
+    inWrite = -1;
+  }
+
+  std::string out;
+  size_t written = 0;
+  bool outEof = false;
+  bool timedOut = false;
+  time_t deadline = time(NULL) + CGI_TIMEOUT_SEC;
+
+  while (!outEof) {
+    struct pollfd pfd[2];
+    int nfds = 0;
+    int inIdx = -1;
+
+    if (inWrite != -1) {
+      pfd[nfds].fd = inWrite;
+      pfd[nfds].events = POLLOUT;
+      pfd[nfds].revents = 0;
+      inIdx = nfds;
+      ++nfds;
+    }
+    int outIdx = nfds;
+    pfd[nfds].fd = outRead;
+    pfd[nfds].events = POLLIN;
+    pfd[nfds].revents = 0;
+    ++nfds;
+
+    int ready = poll(pfd, nfds, 100);
+    if (ready == -1)
+      break;
+
+    if (inIdx != -1 && pfd[inIdx].revents) {
+      if (pfd[inIdx].revents & POLLOUT) {
+        ssize_t n = write(inWrite, body.data() + written, body.size() - written);
+        if (n > 0) {
+          written += static_cast<size_t>(n);
+          if (written >= body.size()) {
+            close(inWrite);
+            inWrite = -1;
+          }
+        } else {
+          // El CGI cerró stdin sin consumir todo el body: no es un error,
+          // se deja de escribir y se sigue drenando su salida.
+          close(inWrite);
+          inWrite = -1;
+        }
+      } else if (pfd[inIdx].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        close(inWrite);
+        inWrite = -1;
+      }
+    }
+
+    if (pfd[outIdx].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
+      char buf[BUFFER_SIZE];
+      ssize_t n = read(outRead, buf, sizeof(buf));
+      if (n > 0)
+        out.append(buf, n);
+      else
+        outEof = true;
+    }
+
+    if (!outEof && time(NULL) > deadline) {
+      timedOut = true;
+      break;
+    }
+  }
+
+  if (inWrite != -1)
+    close(inWrite);
   close(outRead);
 
   int status = 0;
-  waitpid(pid, &status, 0);
+  if (timedOut) {
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return cgiError(504, "Gateway Timeout");
+  }
+
+  // stdout del CGI está en EOF, así que normalmente ya ha terminado, pero un
+  // proceso puede cerrar stdout y seguir vivo: se espera sin bloquear y se
+  // mata si se pasa del margen.
+  bool reaped = false;
+  time_t waitUntil = time(NULL) + 2;
+  while (time(NULL) <= waitUntil) {
+    pid_t r = waitpid(pid, &status, WNOHANG);
+    if (r == pid || r == -1) {
+      reaped = true;
+      break;
+    }
+    poll(NULL, 0, 1);
+  }
+  if (!reaped) {
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return cgiError(504, "Gateway Timeout");
+  }
+
+  // 127 es el código con el que sale el hijo cuando execve falla (intérprete
+  // inexistente o sin permiso de ejecución).
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
+    return cgiError(502, "Bad Gateway");
 
   return buildHttpResponse(out);
 }

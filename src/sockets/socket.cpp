@@ -14,14 +14,14 @@
 #include <unistd.h>
 
 Socket::Socket()
-    : _fd(-1), _port(0), _ip(""), _state(SOCKET_LISTENING),
+    : _fd(-1), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_LISTENING),
       _isNonBlocking(false), _docRoot("./web"), _indexFile("index.html"),
       _maxBodySize(1048576) {}
 
 Socket::Socket(int fd, struct sockaddr_in addr)
-    : _fd(fd), _port(0), _ip(""), _state(SOCKET_READING), _isNonBlocking(true),
-      addr(addr), _docRoot("./web"), _indexFile("index.html"),
-      _maxBodySize(1048576) {}
+    : _fd(fd), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_READING),
+      _isNonBlocking(true), addr(addr), _docRoot("./web"),
+      _indexFile("index.html"), _maxBodySize(1048576) {}
 
 Socket::~Socket() { this->closeSocket(); }
 
@@ -196,6 +196,27 @@ static std::string resolvePath(const std::string &url,
   return serverRoot + rest;
 }
 
+std::string Socket::buildNotFound() {
+  ParseResponse r;
+  r.setStatus(404, "Not Found");
+  for (size_t i = 0; i < _errorPages.size(); ++i) {
+    if (_errorPages[i].code == 404) {
+      std::string p = _docRoot + _errorPages[i].path;
+      if (ParseResponse::fileExists(p)) {
+        r.setBodyFromFile(p);
+        // setBodyFromFile fija 404 solo si el fichero falla; el estado se
+        // reafirma aquí porque la página existe y sirve como cuerpo del 404.
+        r.setStatus(404, "Not Found");
+      } else {
+        r.setBody("");
+      }
+      return r.build();
+    }
+  }
+  r.setBody("");
+  return r.build();
+}
+
 std::string Socket::routeRequest(const std::string &rawRequest) {
   ParseInputRequest parser;
   parser.parse(rawRequest);
@@ -236,9 +257,15 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     return r.build();
   }
 
+  // En chunked los bytes crudos incluyen el framing de los chunks, así que el
+  // límite se compara contra el tamaño ya decodificado.
   size_t bodyStart = rawRequest.find("\r\n\r\n");
-  size_t bodyLen =
-      (bodyStart == std::string::npos) ? 0 : rawRequest.size() - bodyStart - 4;
+  size_t bodyLen;
+  if (ParseInputRequest::isChunked(rawRequest))
+    bodyLen = ParseInputRequest::decodedChunkedSize(rawRequest);
+  else
+    bodyLen =
+        (bodyStart == std::string::npos) ? 0 : rawRequest.size() - bodyStart - 4;
   if (effectiveMax > 0 && static_cast<long>(bodyLen) > effectiveMax) {
     ParseResponse r;
     r.setStatus(413, "Payload Too Large");
@@ -282,15 +309,30 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
       const std::string &ext = loc.cgi_ext[i];
       if (endsWith(url, ext)) {
         std::string filePath = resolvePath(url, loc, _docRoot);
+        // No se lanza el intérprete sobre un script que no existe: eso es un
+        // 404, no una respuesta del CGI.
+        if (!ParseResponse::fileExists(filePath) || isDirectory(filePath))
+          return buildNotFound();
         // interpreter is the i-th entry in cgi_path (paired by index).
         std::string interpreter;
         if (i < loc.cgi_path.size())
           interpreter = loc.cgi_path[i];
         else if (!loc.cgi_path.empty())
           interpreter = loc.cgi_path[0];
+        // Descriptores del servidor que el hijo hereda del fork y debe cerrar
+        // antes del execve, o un CGI colgado mantiene el puerto en LISTEN.
+        std::vector<int> fdsToClose;
+        if (_fd != -1)
+          fdsToClose.push_back(_fd);
+        if (_epollFd != -1)
+          fdsToClose.push_back(_epollFd);
+        for (std::map<int, ClientSession>::const_iterator it =
+                 active_clients.begin();
+             it != active_clients.end(); ++it)
+          fdsToClose.push_back(it->first);
         Parsercgi cgi;
         return cgi.execute(interpreter, filePath, rawRequest, queryString,
-                           _ip, _port);
+                           _ip, _port, fdsToClose);
       }
     }
   }
@@ -339,20 +381,7 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
   }
 
   if (!ParseResponse::fileExists(filePath)) {
-    ParseResponse r;
-    r.setStatus(404, "Not Found");
-    for (size_t i = 0; i < _errorPages.size(); ++i) {
-      if (_errorPages[i].code == 404) {
-        std::string p = _docRoot + _errorPages[i].path;
-        if (ParseResponse::fileExists(p))
-          r.setBodyFromFile(p);
-        else
-          r.setBody("");
-        return r.build();
-      }
-    }
-    r.setBody("");
-    return r.build();
+    return buildNotFound();
   }
 
   if (method == "HEAD") {
@@ -385,6 +414,7 @@ int Socket::initMonohilo(int listenFd) {
     std::cout << "error when create epoll" << std::endl;
     return -1;
   }
+  _epollFd = epollFd;
 
   struct epoll_event ev;
   std::memset(&ev, 0, sizeof(ev));
