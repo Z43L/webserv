@@ -3,7 +3,7 @@ NAME		=	webserv
 
 # Compilador
 CXX			=	c++
-CXXFLAGS	=	-Wall -Wextra -Werror -std=c++98 -MMD -MP
+CXXFLAGS	=	-Wall -Wextra -Werror -std=c++98 -MMD -MP -no-pie
 
 # Directorios
 SRC_DIR		=	src

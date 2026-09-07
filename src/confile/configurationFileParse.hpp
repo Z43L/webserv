@@ -59,6 +59,7 @@ class ConfigParser {
 
         static bool parseIntStrict(const std::string &s, int &out);
         static bool parseLongStrict(const std::string &s, long &out);
+        static bool parseSizeStrict(const std::string &s, long &out);
 
         // Not implemented: parser holds file-parsing state, copying is not meaningful.
         ConfigParser(const ConfigParser &other);

@@ -6,32 +6,27 @@
 #include <iostream>
 #include <map>
 #include <stdio.h>
-#include <unistd.h>
-
+#include <stdlib.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
-#define BUFFER_SIZE 4096
-class Parsercgi {
-private:
-  std::vector<std::string> readMapper;
-  bool wrrong;
-  std::string filePath;
-  std::string bufferRead;
-  int fd;
-  char *isFin;
 
+#define BUFFER_SIZE 4096
+
+class Parsercgi {
 public:
-  Parsercgi() {};
-  Parsercgi(int fd);
-  ~Parsercgi() {};
-  int calculatorPosition(std::string, size_t lenBufferRead);
-  std::string BufferRead(ssize_t fd);
-  std::map<std::string, std::string> ReadMapper(int calculatorPosition,
-                                                int bufferRead);
-  int findCgi(std::string bufferRead, std::string key);
-  int finCgi(std::string bufferRead);
+  Parsercgi() {}
+  ~Parsercgi() {}
+
+  std::string execute(const std::string &interpreter,
+                      const std::string &scriptPath,
+                      const std::string &rawRequest,
+                      const std::string &queryString,
+                      const std::string &serverHost,
+                      int serverPort);
 };
 
 #endif

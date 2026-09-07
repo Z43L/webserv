@@ -50,6 +50,32 @@ bool ConfigParser::parseLongStrict(const std::string &s, long &out)
     return true;
 }
 
+bool ConfigParser::parseSizeStrict(const std::string &s, long &out)
+{
+    if (s.empty())
+        return false;
+    char *endptr;
+    long value = std::strtol(s.c_str(), &endptr, 10);
+    if (value < 0)
+        return false;
+    
+    // Handle size suffixes: M (megabytes), K (kilobytes), G (gigabytes)
+    if (*endptr != '\0')
+    {
+        std::string suffix(endptr);
+        if (suffix == "M")
+            value *= 1024 * 1024;
+        else if (suffix == "K")
+            value *= 1024;
+        else if (suffix == "G")
+            value *= 1024 * 1024 * 1024;
+        else
+            return false; // Invalid suffix
+    }
+    out = value;
+    return true;
+}
+
 // Whitelist check so a typo'd or unsupported directive is rejected with a
 // clear error instead of being silently ignored (or, worse, silently doing
 // nothing the way the old stub's tokenizer loop did).
@@ -61,7 +87,8 @@ bool ConfigParser::isKnownDirective(const std::string &word, DirectiveScope scop
     };
     static const char *locationDirectives[] = {
         "root", "autoindex", "allow_methods", "index",
-        "return", "alias", "cgi_path", "cgi_ext", 0
+        "return", "alias", "cgi_path", "cgi_ext",
+        "client_max_body_size", 0
     };
 
     const char **list = (scope == SCOPE_SERVER) ? serverDirectives : locationDirectives;
@@ -203,7 +230,7 @@ void ConfigParser::parseServerDirective(size_t &pos, ServerConfig &sc, const std
         if (values.size() != 1)
             throw ConfigParseException("'client_max_body_size' expects exactly one value", directiveLine);
         long size;
-        if (!parseLongStrict(values[0], size) || size < 0)
+        if (!parseSizeStrict(values[0], size) || size < 0)
             throw ConfigParseException("invalid size value '" + values[0] + "' for 'client_max_body_size'", directiveLine);
         sc.setClientMaxBodySize(size);
     }
@@ -275,6 +302,15 @@ void ConfigParser::parseLocationDirective(size_t &pos, LocationBlock &loc, const
         if (values.empty())
             throw ConfigParseException("'cgi_ext' expects at least one value", directiveLine);
         loc.cgi_ext = values;
+    }
+    else if (directive == "client_max_body_size")
+    {
+        if (values.size() != 1)
+            throw ConfigParseException("'client_max_body_size' expects exactly one value", directiveLine);
+        long size;
+        if (!parseSizeStrict(values[0], size) || size < 0)
+            throw ConfigParseException("invalid size value '" + values[0] + "' for 'client_max_body_size'", directiveLine);
+        loc.client_max_body_size = size;
     }
 }
 

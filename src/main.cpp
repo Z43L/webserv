@@ -8,7 +8,6 @@ int main(int argc, char **argv) {
     std::cerr << "Usage: " << argv[0] << " [config_file]" << std::endl;
     return 1;
   }
-  // Sin argumento, cae de vuelta a confile.conf en el directorio actual.
   std::string configPath = (argc == 2) ? argv[1] : "confile.conf";
 
   ConfigParser parser;
@@ -17,16 +16,12 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // parseFile() ya garantiza que un config inválido nunca llega hasta aquí;
-  // solo falta comprobar que exista al menos un bloque "server".
   const std::vector<ServerConfig> &servers = parser.getServers();
   if (servers.empty()) {
     std::cerr << "Configuration error: no server blocks defined" << std::endl;
     return 1;
   }
   if (servers.size() > 1) {
-    // El modelo de datos ya soporta varios "server{}", pero el despacho
-    // multi-servidor en el epoll loop queda pendiente (ver plan).
     std::cerr << "Warning: multiple server blocks found; only the first is bound "
                   "(multi-server support is a follow-up)" << std::endl;
   }
@@ -35,6 +30,9 @@ int main(int argc, char **argv) {
   Socket server;
   server.setDocRoot(cfg.getRoot());
   server.setIndexFile(cfg.getIndex());
+  server.setLocations(cfg.getLocations());
+  server.setErrorPages(cfg.getErrorPages());
+  server.setMaxBodySize(cfg.getClientMaxBodySize());
 
   int listenFd = server.bindAndListen(cfg.getHost(), cfg.getListenPort(), 128);
   if (listenFd == -1) {

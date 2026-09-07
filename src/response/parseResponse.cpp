@@ -80,11 +80,21 @@ std::string ParseResponse::build() const {
   response << "HTTP/1.1 " << _statusCode << " " << _statusMessage << "\r\n";
 
   std::map<std::string, std::string>::const_iterator it;
+  bool hasContentLength = false;
   for (it = _headers.begin(); it != _headers.end(); ++it) {
+    if (it->first == "Content-Length") {
+      hasContentLength = true;
+      continue;
+    }
     response << it->first << ": " << it->second << "\r\n";
   }
 
-  response << "Content-Length: " << _body.length() << "\r\n";
+  if (hasContentLength) {
+    std::map<std::string, std::string>::const_iterator cl = _headers.find("Content-Length");
+    response << "Content-Length: " << cl->second << "\r\n";
+  } else {
+    response << "Content-Length: " << _body.length() << "\r\n";
+  }
 
   response << "Connection: close\r\n";
 

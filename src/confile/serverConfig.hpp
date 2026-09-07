@@ -14,7 +14,7 @@ struct ErrorPage {
 // Mirrors one 'location <path> { ... }' block, including the special
 // 'location cgi-bin { ... }' block (cgi_path/cgi_ext are only meaningful there).
 struct LocationBlock {
-    LocationBlock() : autoindex(false) {}
+    LocationBlock() : autoindex(false), client_max_body_size(-1) {}
 
     std::string path;
     std::string root;
@@ -25,15 +25,18 @@ struct LocationBlock {
     std::string alias;
     std::vector<std::string> cgi_path;
     std::vector<std::string> cgi_ext;
+    long        client_max_body_size;
 };
 
 class ServerConfig {
     public:
         // listen_port stays -1 until 'listen' is parsed; ConfigParser::validateMandatoryFields
         // checks for that sentinel to detect a missing mandatory directive.
+        // client_max_body_size defaults to 0 (unlimited) so the server does not
+        // artificially cap body sizes unless the operator sets one explicitly.
         ServerConfig()
             : listen_port(-1), host("0.0.0.0"), index("index.html"),
-              client_max_body_size(1048576) {}
+              client_max_body_size(0) {}
 
         void setListenPort(int port) { this->listen_port = port; }
         void setHost(const std::string &host) { this->host = host; }

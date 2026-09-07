@@ -17,6 +17,7 @@ class ParseInputRequest {
 private:
   std::string rawInput;
   t_method method;
+  std::string methodStr;
   std::string type;
   std::string url;
   std::string dns;
@@ -31,7 +32,13 @@ public:
   bool is_request_complete(const std::string &rawInput);
   void parse(const std::string &rawInput);
   const std::string &getType() const;
+  const std::string &getMethod() const;
   const std::string &getUrl() const;
+  long                getContentLength() const;
+  static long         getContentLengthFromRaw(const std::string &raw);
+  static bool         isChunked(const std::string &raw);
+  static size_t       decodedChunkedSize(const std::string &raw);
+  static std::string  decodeChunked(const std::string &raw);
   const std::string &getDns() const;
   const std::string &getHeader() const;
   const std::string &getBody() const;

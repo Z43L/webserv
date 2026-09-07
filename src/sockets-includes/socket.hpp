@@ -8,6 +8,8 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
+#include "confile/serverConfig.hpp"
 #define MAX_EVENTS 64
 #define BUFFER_SIZE 4096
 
@@ -17,28 +19,33 @@ struct ClientSession {
   bool is_response_ready;
 };
 
-// Enumeración para el estado de la conexión
 enum e_socket_state {
-  SOCKET_LISTENING,  // Esperando nuevas conexiones
-  SOCKET_READING,    // Leyendo datos del cliente
-  SOCKET_PROCESSING, // El request se está parseando/procesando
-  SOCKET_WRITING,    // Enviando la respuesta al cliente
-  SOCKET_CLOSING     // Listo para cerrarse
+  SOCKET_LISTENING,
+  SOCKET_READING,
+  SOCKET_PROCESSING,
+  SOCKET_WRITING,
+  SOCKET_CLOSING
 };
 
 class Socket {
 private:
-  int _fd;                  // File descriptor del socket
-  int _port;                // Puerto de escucha (si es listening socket)
-  std::string _ip;          // IP de escucha
-  e_socket_state _state;    // Estado actual de la conexión
-  std::string _readBuffer;  // Buffer para almacenar lo que llega
-  std::string _writeBuffer; // Buffer para almacenar lo que se va a enviar
-  bool _isNonBlocking;      // Bandera de modo no bloqueante
+  int _fd;
+  int _port;
+  std::string _ip;
+  e_socket_state _state;
+  std::string _readBuffer;
+  std::string _writeBuffer;
+  bool _isNonBlocking;
   struct sockaddr_in addr;
-  std::string _docRoot;     // Raiz de documentos servidos
-  std::string _indexFile;   // Archivo servido para "/"
+  std::string _docRoot;
+  std::string _indexFile;
+  std::vector<LocationBlock> _locations;
+  std::vector<ErrorPage>     _errorPages;
+  long                       _maxBodySize;
   bool setNonBlocking(int fd);
+
+  std::string handleReadRequest(const std::string &rawRequest);
+  std::string routeRequest(const std::string &rawRequest);
 
 public:
   Socket();
@@ -48,9 +55,11 @@ public:
   int bindAndListen(const std::string &ip, int port, int backlog);
   Socket *acceptConnection();
 
-  // Llamados desde main.cpp con los valores de ServerConfig antes de bindAndListen.
   void setDocRoot(const std::string &docRoot);
   void setIndexFile(const std::string &indexFile);
+  void setLocations(const std::vector<LocationBlock> &locations);
+  void setErrorPages(const std::vector<ErrorPage> &errorPages);
+  void setMaxBodySize(long size);
 
   std::map<int, ClientSession> active_clients;
   struct epoll_event events[MAX_EVENTS];
@@ -66,4 +75,4 @@ public:
   void setWriteBuffer(const std::string &response);
 };
 
-#endif // SOCKET_HPP
+#endif
