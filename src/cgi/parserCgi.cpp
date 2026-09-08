@@ -56,6 +56,50 @@ static std::string getHeaderValue(const std::string &raw, const std::string &nam
   return "";
 }
 
+// Reenvía TODAS las cabeceras de la petición como HTTP_* (CGI/1.1: guiones a
+// guiones bajos y todo en mayúsculas). Con una lista fija se quedaban fuera las
+// cabeceras que el cliente inventa, y el tester oficial manda una propia
+// (X-Secret-Header-For-Test) que el CGI necesita ver.
+// Content-Type y Content-Length se omiten: van sin prefijo y ya se han añadido.
+static void addHttpHeaderEnv(const std::string &raw,
+                             std::vector<std::string> &env) {
+  size_t limit = raw.find("\r\n\r\n");
+  if (limit == std::string::npos) limit = raw.size();
+
+  size_t pos = raw.find("\r\n");
+  if (pos == std::string::npos) return;
+  pos += 2;
+
+  while (pos < limit) {
+    size_t eol = raw.find("\r\n", pos);
+    if (eol == std::string::npos || eol > limit) eol = limit;
+    std::string line = raw.substr(pos, eol - pos);
+    pos = eol + 2;
+
+    size_t c = line.find(':');
+    if (c == std::string::npos) continue;
+    std::string key = line.substr(0, c);
+    std::string val = line.substr(c + 1);
+    while (!val.empty() && (val[0] == ' ' || val[0] == '\t'))
+      val.erase(0, 1);
+    while (!val.empty() && (val[val.size() - 1] == ' ' ||
+                            val[val.size() - 1] == '\t' ||
+                            val[val.size() - 1] == '\r'))
+      val.erase(val.size() - 1, 1);
+
+    for (size_t i = 0; i < key.size(); ++i) {
+      if (key[i] == '-')
+        key[i] = '_';
+      else
+        key[i] = static_cast<char>(toupper(key[i]));
+    }
+    if (key.empty() || key == "CONTENT_TYPE" || key == "CONTENT_LENGTH")
+      continue;
+
+    env.push_back("HTTP_" + key + "=" + val);
+  }
+}
+
 static std::string extractBody(const std::string &raw) {
   size_t p = raw.find("\r\n\r\n");
   if (p == std::string::npos) return std::string();
@@ -247,35 +291,21 @@ std::string Parsercgi::execute(const std::string &interpreter,
     env.push_back("QUERY_STRING=" + queryEnv);
     env.push_back("SCRIPT_NAME=" + scriptName);
     env.push_back("SCRIPT_FILENAME=" + scriptPath);
-    env.push_back("PATH_INFO=" + urlPath);
+    // PATH_INFO va sin query string: es una ruta, y el CGI la contrasta con el
+    // script que se le pasa. El query solo viaja en QUERY_STRING y REQUEST_URI.
+    env.push_back("PATH_INFO=" + scriptUrl);
     env.push_back("PATH_TRANSLATED=" + scriptPath);
     env.push_back("REQUEST_URI=" + urlPath);
     env.push_back("SERVER_PROTOCOL=" + serverProtocol);
     env.push_back("SERVER_NAME=" + hostHeader);
     env.push_back("SERVER_PORT=" + portStr);
-    env.push_back("HTTP_HOST=" + hostHeader);
     env.push_back("REMOTE_ADDR=" + std::string(serverHost));
     env.push_back("REMOTE_PORT=0");
     env.push_back("GATEWAY_INTERFACE=CGI/1.1");
     env.push_back("REDIRECT_STATUS=200");
 
-    // Forward common request headers as HTTP_* env vars.
-    static const char *forwarded[] = {
-        "User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
-        "Referer", "Cookie", NULL};
-    for (int i = 0; forwarded[i]; ++i) {
-      std::string v = getHeaderValue(rawRequest, forwarded[i]);
-      if (!v.empty()) {
-        std::string key = std::string("HTTP_") + forwarded[i];
-        for (size_t j = 0; j < key.size(); ++j) {
-          if (key[j] == '-')
-            key[j] = '_';
-          else
-            key[j] = static_cast<char>(toupper(key[j]));
-        }
-        env.push_back(key + "=" + v);
-      }
-    }
+    // HTTP_HOST y el resto de cabeceras (incluida Host) las añade esta llamada.
+    addHttpHeaderEnv(rawRequest, env);
 
     char **envp = buildEnvp(env);
 

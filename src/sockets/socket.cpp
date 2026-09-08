@@ -309,9 +309,11 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
       const std::string &ext = loc.cgi_ext[i];
       if (endsWith(url, ext)) {
         std::string filePath = resolvePath(url, loc, _docRoot);
-        // No se lanza el intérprete sobre un script que no existe: eso es un
-        // 404, no una respuesta del CGI.
-        if (!ParseResponse::fileExists(filePath) || isDirectory(filePath))
+        // El intérprete se lanza aunque el script no exista: quien decide qué
+        // responder en ese caso es el propio CGI (el cgi_tester devuelve su
+        // "Status: 500"), no el servidor con un 404. Un directorio sí se
+        // descarta aquí porque no hay nada que ejecutar.
+        if (isDirectory(filePath))
           return buildNotFound();
         // interpreter is the i-th entry in cgi_path (paired by index).
         std::string interpreter;
