@@ -39,6 +39,7 @@ int main(int argc, char **argv) {
   server.setLocations(cfg.getLocations());
   server.setErrorPages(cfg.getErrorPages());
   server.setMaxBodySize(cfg.getClientMaxBodySize());
+  server.setReadTimeout(cfg.getClientReadTimeoutSeconds());
 
   int listenFd = server.bindAndListen(cfg.getHost(), cfg.getListenPort(), 128);
   if (listenFd == -1) {

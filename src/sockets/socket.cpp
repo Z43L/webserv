@@ -16,12 +16,12 @@
 Socket::Socket()
     : _fd(-1), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_LISTENING),
       _isNonBlocking(false), _docRoot("./web"), _indexFile("index.html"),
-      _maxBodySize(1048576) {}
+      _maxBodySize(0), _readTimeoutSec(30) {}
 
 Socket::Socket(int fd, struct sockaddr_in addr)
     : _fd(fd), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_READING),
       _isNonBlocking(true), addr(addr), _docRoot("./web"),
-      _indexFile("index.html"), _maxBodySize(1048576) {}
+      _indexFile("index.html"), _maxBodySize(0), _readTimeoutSec(30) {}
 
 Socket::~Socket() { this->closeSocket(); }
 
@@ -92,6 +92,7 @@ void Socket::setErrorPages(const std::vector<ErrorPage> &errorPages) {
   _errorPages = errorPages;
 }
 void Socket::setMaxBodySize(long size) { _maxBodySize = size; }
+void Socket::setReadTimeout(long seconds) { _readTimeoutSec = seconds; }
 
 static bool endsWith(const std::string &s, const std::string &suffix) {
   if (suffix.size() > s.size())
@@ -196,6 +197,31 @@ static std::string resolvePath(const std::string &url,
   return serverRoot + rest;
 }
 
+// Extrae la URL (sin query string) de la primera línea de un raw request sin
+// construir un ParseInputRequest completo. Se usa para resolver la location
+// dentro del rechazo temprano de 413 y para el helper effectiveMaxFor().
+// Devuelve "" si la request está malformada.
+static std::string extractRequestUrl(const std::string &raw) {
+  size_t eol = raw.find("\r\n");
+  if (eol == std::string::npos) eol = raw.size();
+  size_t first = raw.find(' ');
+  if (first == std::string::npos || first >= eol) return "";
+  size_t second = raw.find(' ', first + 1);
+  size_t end = (second == std::string::npos || second > eol) ? eol : second;
+  std::string url = raw.substr(first + 1, end - first - 1);
+  size_t q = url.find('?');
+  if (q != std::string::npos) url.resize(q);
+  return url;
+}
+
+long Socket::effectiveMaxFor(const std::string &rawRequest) const {
+  std::string url = extractRequestUrl(rawRequest);
+  LocationBlock loc = matchLocation(_locations, url);
+  if (loc.client_max_body_size >= 0)
+    return loc.client_max_body_size;
+  return _maxBodySize;
+}
+
 std::string Socket::buildNotFound() {
   ParseResponse r;
   r.setStatus(404, "Not Found");
@@ -244,9 +270,7 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
   // max_body enforcement: a location can override the server-wide limit
   // (client_max_body_size -1 means "inherit from server"); a value of 0
   // means "no limit". Use whichever is in scope when validating the body.
-  long effectiveMax = _maxBodySize;
-  if (loc.client_max_body_size >= 0)
-    effectiveMax = loc.client_max_body_size;
+  long effectiveMax = effectiveMaxFor(rawRequest);
 
   // max_body enforcement: Content-Length must not exceed client_max_body_size.
   long declaredLen = parser.getContentLength();
@@ -302,17 +326,15 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
   }
 
   // CGI dispatch: if method is POST and the URL extension is in the
-  // location's cgi_ext list, run the matching interpreter with the file
-  // under the location's alias/root.
+  // location's cgi_ext list, run the matching interpreter regardless of
+  // whether the script file actually exists on disk — the CGI itself
+  // decides what to do with the request (matching how Apache's mod_cgi
+  // and nginx's fastcgi_pass behave for an extension-based dispatch).
   if (method == "POST" && !loc.cgi_ext.empty()) {
     for (size_t i = 0; i < loc.cgi_ext.size(); ++i) {
       const std::string &ext = loc.cgi_ext[i];
       if (endsWith(url, ext)) {
         std::string filePath = resolvePath(url, loc, _docRoot);
-        // No se lanza el intérprete sobre un script que no existe: eso es un
-        // 404, no una respuesta del CGI.
-        if (!ParseResponse::fileExists(filePath) || isDirectory(filePath))
-          return buildNotFound();
         // interpreter is the i-th entry in cgi_path (paired by index).
         std::string interpreter;
         if (i < loc.cgi_path.size())
@@ -428,7 +450,35 @@ int Socket::initMonohilo(int listenFd) {
   }
 
   while (true) {
-    int nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
+    // Cerrar conexiones inactivas: si un cliente abrió TCP y dejó de enviar
+    // datos durante más de _readTimeoutSec (0 = sin timeout), respondemos
+    // 408 Request Timeout y liberamos el fd antes del próximo epoll_wait.
+    if (_readTimeoutSec > 0) {
+      time_t now = std::time(NULL);
+      std::vector<int> timed_out;
+      for (std::map<int, ClientSession>::iterator it = active_clients.begin();
+           it != active_clients.end(); ++it) {
+        if (now - it->second.last_activity >= _readTimeoutSec)
+          timed_out.push_back(it->first);
+      }
+      for (size_t t = 0; t < timed_out.size(); ++t) {
+        int fd = timed_out[t];
+        if (!active_clients[fd].write_buffer.empty())
+          continue;
+        ParseResponse r;
+        r.setStatus(408, "Request Timeout");
+        r.setBody("");
+        active_clients[fd].write_buffer = r.build();
+        active_clients[fd].is_response_ready = true;
+        struct epoll_event ev;
+        std::memset(&ev, 0, sizeof(ev));
+        ev.events = EPOLLIN | EPOLLOUT;
+        ev.data.fd = fd;
+        epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &ev);
+      }
+    }
+
+    int nfds = epoll_wait(epollFd, events, MAX_EVENTS, 1000);
     if (nfds == -1) {
       std::cerr << "Error en epoll_wait" << std::endl;
       continue;
@@ -463,6 +513,7 @@ int Socket::initMonohilo(int listenFd) {
 
         ClientSession session;
         session.is_response_ready = false;
+        session.last_activity = std::time(NULL);
         active_clients[client_fd] = session;
         std::cout << "Nueva conexión aceptada. Socket FD: " << client_fd
                   << std::endl;
@@ -476,6 +527,7 @@ int Socket::initMonohilo(int listenFd) {
             temp_buffer[bytes_recv] = '\0';
             ClientSession &session = active_clients[currentFd];
             session.read_buffer.append(temp_buffer, bytes_recv);
+            session.last_activity = std::time(NULL);
 
             // If the headers have arrived and Content-Length already exceeds
             // the server-wide limit, reject immediately rather than waiting
@@ -483,27 +535,25 @@ int Socket::initMonohilo(int listenFd) {
             // override is applied later in routeRequest, so this early
             // reject only fires when the operator has set a server-level
             // cap that the request would clearly violate.
-            if (session.write_buffer.empty() && _maxBodySize > 0 &&
+            // If the headers have arrived and the declared body size already
+            // exceeds the effective limit (server cap, or location override if
+            // any), reject immediately rather than waiting for the (possibly
+            // never-arriving) full body.
+            if (session.write_buffer.empty() &&
                 session.read_buffer.find("\r\n\r\n") != std::string::npos) {
-              if (ParseInputRequest::isChunked(session.read_buffer)) {
-                size_t decoded = ParseInputRequest::decodedChunkedSize(
-                    session.read_buffer);
-                if (static_cast<long>(decoded) > _maxBodySize) {
-                  ParseResponse r;
-                  r.setStatus(413, "Payload Too Large");
-                  session.write_buffer = r.build();
-                  session.is_response_ready = true;
-                  struct epoll_event client_ev;
-                  std::memset(&client_ev, 0, sizeof(client_ev));
-                  client_ev.events = EPOLLIN | EPOLLOUT;
-                  client_ev.data.fd = currentFd;
-                  epoll_ctl(epollFd, EPOLL_CTL_MOD, currentFd, &client_ev);
-                  continue;
+              long effectiveMax = effectiveMaxFor(session.read_buffer);
+              if (effectiveMax > 0) {
+                bool tooLarge = false;
+                if (ParseInputRequest::isChunked(session.read_buffer)) {
+                  size_t decoded = ParseInputRequest::decodedChunkedSize(
+                      session.read_buffer);
+                  tooLarge = static_cast<long>(decoded) > effectiveMax;
+                } else {
+                  long cl = ParseInputRequest().getContentLengthFromRaw(
+                      session.read_buffer);
+                  tooLarge = cl > effectiveMax;
                 }
-              } else {
-                long cl = ParseInputRequest().getContentLengthFromRaw(
-                    session.read_buffer);
-                if (cl > _maxBodySize) {
+                if (tooLarge) {
                   ParseResponse r;
                   r.setStatus(413, "Payload Too Large");
                   session.write_buffer = r.build();

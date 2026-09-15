@@ -259,21 +259,43 @@ std::string Parsercgi::execute(const std::string &interpreter,
     env.push_back("GATEWAY_INTERFACE=CGI/1.1");
     env.push_back("REDIRECT_STATUS=200");
 
-    // Forward common request headers as HTTP_* env vars.
-    static const char *forwarded[] = {
-        "User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
-        "Referer", "Cookie", NULL};
-    for (int i = 0; forwarded[i]; ++i) {
-      std::string v = getHeaderValue(rawRequest, forwarded[i]);
-      if (!v.empty()) {
-        std::string key = std::string("HTTP_") + forwarded[i];
-        for (size_t j = 0; j < key.size(); ++j) {
-          if (key[j] == '-')
-            key[j] = '_';
-          else
-            key[j] = static_cast<char>(toupper(key[j]));
+    // Forward every request header as HTTP_* env vars (RFC 3875 §4.1.18).
+    // Hard-coding a short whitelist would silently drop headers like
+    // X-SECRET-HEADER-FOR-TEST that the CGI may rely on.
+    {
+      size_t hdrLimit = rawRequest.find("\r\n\r\n");
+      if (hdrLimit == std::string::npos) hdrLimit = rawRequest.size();
+      size_t pos = rawRequest.find("\r\n");
+      if (pos != std::string::npos) {
+        pos += 2;
+        while (pos < hdrLimit) {
+          size_t eol = rawRequest.find("\r\n", pos);
+          if (eol == std::string::npos || eol > hdrLimit) eol = hdrLimit;
+          std::string line = rawRequest.substr(pos, eol - pos);
+          pos = eol + 2;
+
+          size_t c = line.find(':');
+          if (c == std::string::npos) continue;
+          std::string key = line.substr(0, c);
+          std::string val = line.substr(c + 1);
+          while (!val.empty() && (val[0] == ' ' || val[0] == '\t'))
+            val.erase(0, 1);
+          while (!val.empty() &&
+                 (val[val.size() - 1] == ' ' || val[val.size() - 1] == '\t' ||
+                  val[val.size() - 1] == '\r'))
+            val.erase(val.size() - 1, 1);
+
+          // CGI/1.1 §4.1.18: header name → uppercase, '-' → '_', prefix HTTP_.
+          std::string envKey = "HTTP_";
+          for (size_t j = 0; j < key.size(); ++j) {
+            char ch = key[j];
+            if (ch == '-')
+              envKey += '_';
+            else
+              envKey += static_cast<char>(toupper(static_cast<unsigned char>(ch)));
+          }
+          env.push_back(envKey + "=" + val);
         }
-        env.push_back(key + "=" + v);
       }
     }
 

@@ -83,7 +83,7 @@ bool ConfigParser::isKnownDirective(const std::string &word, DirectiveScope scop
 {
     static const char *serverDirectives[] = {
         "listen", "host", "server_name", "error_page",
-        "client_max_body_size", "root", "index", 0
+        "client_max_body_size", "client_read_timeout", "root", "index", 0
     };
     static const char *locationDirectives[] = {
         "root", "autoindex", "allow_methods", "index",
@@ -233,6 +233,15 @@ void ConfigParser::parseServerDirective(size_t &pos, ServerConfig &sc, const std
         if (!parseSizeStrict(values[0], size) || size < 0)
             throw ConfigParseException("invalid size value '" + values[0] + "' for 'client_max_body_size'", directiveLine);
         sc.setClientMaxBodySize(size);
+    }
+    else if (directive == "client_read_timeout")
+    {
+        if (values.size() != 1)
+            throw ConfigParseException("'client_read_timeout' expects exactly one value", directiveLine);
+        long seconds;
+        if (!parseLongStrict(values[0], seconds) || seconds < 0)
+            throw ConfigParseException("invalid value '" + values[0] + "' for 'client_read_timeout'", directiveLine);
+        sc.setClientReadTimeoutSeconds(seconds);
     }
     else if (directive == "error_page")
     {

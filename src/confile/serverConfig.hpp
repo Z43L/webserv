@@ -32,11 +32,13 @@ class ServerConfig {
     public:
         // listen_port stays -1 until 'listen' is parsed; ConfigParser::validateMandatoryFields
         // checks for that sentinel to detect a missing mandatory directive.
-        // client_max_body_size defaults to 0 (unlimited) so the server does not
-        // artificially cap body sizes unless the operator sets one explicitly.
+        // client_max_body_size defaults to 0 (unlimited) so the server only
+        // caps body sizes when the operator sets one explicitly (server-level
+        // or per-location). Locations with no override inherit this value.
+        // client_read_timeout_seconds defaults to 30; 0 disables the timeout.
         ServerConfig()
             : listen_port(-1), host("0.0.0.0"), index("index.html"),
-              client_max_body_size(0) {}
+              client_max_body_size(0), client_read_timeout_seconds(30) {}
 
         void setListenPort(int port) { this->listen_port = port; }
         void setHost(const std::string &host) { this->host = host; }
@@ -44,6 +46,7 @@ class ServerConfig {
         void setRoot(const std::string &root) { this->root = root; }
         void setIndex(const std::string &index) { this->index = index; }
         void setClientMaxBodySize(long size) { this->client_max_body_size = size; }
+        void setClientReadTimeoutSeconds(long seconds) { this->client_read_timeout_seconds = seconds; }
 
         void addErrorPage(int code, const std::string &path)
         {
@@ -61,6 +64,7 @@ class ServerConfig {
         const std::string  &getRoot() const { return this->root; }
         const std::string  &getIndex() const { return this->index; }
         long                getClientMaxBodySize() const { return this->client_max_body_size; }
+        long                getClientReadTimeoutSeconds() const { return this->client_read_timeout_seconds; }
         const std::vector<ErrorPage>     &getErrorPages() const { return this->error_pages; }
         const std::vector<LocationBlock> &getLocations() const { return this->locations; }
 
@@ -71,6 +75,7 @@ class ServerConfig {
         std::string root;
         std::string index;
         long        client_max_body_size;
+        long        client_read_timeout_seconds;
         std::vector<ErrorPage>     error_pages;
         std::vector<LocationBlock> locations;
 };
