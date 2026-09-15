@@ -1,62 +1,103 @@
 #ifndef SOCKET_HPP
 #define SOCKET_HPP
 
-#include <string>
-#include <sys/socket.h>
+#include <ctime>
+#include <iostream>
+#include <map>
 #include <netinet/in.h>
+#include <string>
+#include <sys/epoll.h>
+#include <sys/socket.h>
 #include <unistd.h>
-#include "../server.hpp"
+#include <vector>
+#include "confile/serverConfig.hpp"
 #define MAX_EVENTS 64
 #define BUFFER_SIZE 4096
 
 struct ClientSession {
-    std::string read_buffer;
-    std::string write_buffer;
-    bool        is_response_ready;
+  std::string read_buffer;
+  std::string write_buffer;
+  bool is_response_ready;
+  time_t last_activity;
 };
 
-// Enumeración para el estado de la conexión 
 enum e_socket_state {
-    SOCKET_LISTENING,  // Esperando nuevas conexiones
-    SOCKET_READING,    // Leyendo datos del cliente
-    SOCKET_PROCESSING, // El request se está parseando/procesando
-    SOCKET_WRITING,    // Enviando la respuesta al cliente
-    SOCKET_CLOSING    // Listo para cerrarse
+  SOCKET_LISTENING,
+  SOCKET_READING,
+  SOCKET_PROCESSING,
+  SOCKET_WRITING,
+  SOCKET_CLOSING
 };
 
 class Socket {
 private:
-    int _fd;                   // File descriptor del socket
-    int _port;                 // Puerto de escucha (si es listening socket)
-    std::string _ip;           // IP de escucha
-    e_socket_state _state;     // Estado actual de la conexión
-    std::string _readBuffer;   // Buffer para almacenar lo que llega
-    std::string _writeBuffer;  // Buffer para almacenar lo que se va a enviar
-    bool _isNonBlocking;       // Bandera de modo no bloqueante
-    struct sockaddr_in addr;
-    bool setNonBlocking(int fd);
+  int _fd;
+  int _epollFd;
+  int _port;
+  std::string _ip;
+  e_socket_state _state;
+  std::string _readBuffer;
+  std::string _writeBuffer;
+  bool _isNonBlocking;
+  struct sockaddr_in addr;
+  std::string _docRoot;
+  std::string _indexFile;
+  std::vector<LocationBlock> _locations;
+  std::vector<ErrorPage>     _errorPages;
+  long                       _maxBodySize;
+  long                       _readTimeoutSec;
+  bool setNonBlocking(int fd);
+
+  std::string handleReadRequest(const std::string &rawRequest);
+  std::string routeRequest(const std::string &rawRequest);
+  std::string buildNotFound();
+
+  long effectiveMaxFor(const std::string &rawRequest) const;
+
+  std::string checkBodyLimits(const std::string &rawRequest,
+                              long declaredLen) const;
+  std::string runCgi(const std::string &url, const LocationBlock &loc,
+                     const std::string &rawRequest,
+                     const std::string &queryString, size_t extIdx);
+  bool resolveDirectory(std::string &filePath, const std::string &url,
+                        const LocationBlock &loc, std::string &out);
+
+  int setupEpoll(int listenFd);
+  void runEventLoop(int listenFd, int epollFd);
+  void sweepTimeouts(int epollFd);
+  void acceptNewClient(int listenFd, int epollFd);
+  bool rejectIfTooLarge(ClientSession &session, int fd, int epollFd);
+  bool handleClientRead(int fd, int epollFd);
+  void handleClientWrite(int fd, int epollFd);
+  void closeClient(int epollFd, int fd);
 
 public:
-    
-    Socket();
-    Socket(int fd, struct sockaddr_in addr);
-    ~Socket();
+  Socket();
+  Socket(int fd, struct sockaddr_in addr);
+  ~Socket();
 
-    int bindAndListen(const std::string& ip, int port, int backlog);
-    Socket* acceptConnection();
+  int bindAndListen(const std::string &ip, int port, int backlog);
+  Socket *acceptConnection();
 
-    std::map<int, ClientSession> active_clients;
-    struct epoll_event events[MAX_EVENTS];
-    ssize_t readData(); 
-    ssize_t writeData()  
-    void closeSocket();
-    int initMonohilo(int fd);
-    
-    int getFd() const;
-    e_socket_state getState() const;
-    void setState(e_socket_state state);
-    std::string& getReadBuffer();
-    void setWriteBuffer(const std::string& response);
+  void setDocRoot(const std::string &docRoot);
+  void setIndexFile(const std::string &indexFile);
+  void setLocations(const std::vector<LocationBlock> &locations);
+  void setErrorPages(const std::vector<ErrorPage> &errorPages);
+  void setMaxBodySize(long size);
+  void setReadTimeout(long seconds);
+
+  std::map<int, ClientSession> active_clients;
+  struct epoll_event events[MAX_EVENTS];
+  ssize_t readData();
+  ssize_t writeData();
+  void closeSocket();
+  int initMonohilo(int fd);
+
+  int getFd() const;
+  e_socket_state getState() const;
+  void setState(e_socket_state state);
+  std::string &getReadBuffer();
+  void setWriteBuffer(const std::string &response);
 };
 
-#endif // SOCKET_HPP
+#endif
