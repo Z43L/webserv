@@ -206,6 +206,73 @@ static std::string extractRequestUrl(const std::string &raw) {
   return url;
 }
 
+static std::string simpleResponse(int code, const std::string &reason,
+                                  const std::string &headerKey = "",
+                                  const std::string &headerValue = "") {
+  ParseResponse r;
+  r.setStatus(code, reason);
+  if (!headerKey.empty())
+    r.setHeader(headerKey, headerValue);
+  r.setBody("");
+  return r.build();
+}
+
+static std::string takeQuery(std::string &url) {
+  std::string query;
+  size_t q = url.find('?');
+  if (q != std::string::npos) {
+    query = url.substr(q + 1);
+    url = url.substr(0, q);
+  }
+  return query;
+}
+
+static std::string joinMethods(const std::vector<std::string> &methods) {
+  std::string allow;
+  for (size_t i = 0; i < methods.size(); ++i) {
+    if (i)
+      allow += ", ";
+    allow += methods[i];
+  }
+  return allow;
+}
+
+static size_t requestBodyLength(const std::string &raw) {
+  if (ParseInputRequest::isChunked(raw))
+    return ParseInputRequest::decodedChunkedSize(raw);
+  size_t bodyStart = raw.find("\r\n\r\n");
+  return (bodyStart == std::string::npos) ? 0 : raw.size() - bodyStart - 4;
+}
+
+static int findCgiExtIndex(const LocationBlock &loc, const std::string &url) {
+  for (size_t i = 0; i < loc.cgi_ext.size(); ++i)
+    if (endsWith(url, loc.cgi_ext[i]))
+      return static_cast<int>(i);
+  return -1;
+}
+
+static std::string serveHead(const std::string &filePath) {
+  ParseResponse r;
+  r.setStatus(200, "OK");
+  r.setHeader("Content-Type", ParseResponse::getMimeType(filePath));
+  struct stat st;
+  if (stat(filePath.c_str(), &st) == 0) {
+    std::ostringstream ss;
+    ss << static_cast<long>(st.st_size);
+    r.setHeader("Content-Length", ss.str());
+  }
+  r.setBody("");
+  return r.build();
+}
+
+static void armForWrite(int epollFd, int fd) {
+  struct epoll_event ev;
+  std::memset(&ev, 0, sizeof(ev));
+  ev.events = EPOLLIN | EPOLLOUT;
+  ev.data.fd = fd;
+  epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &ev);
+}
+
 long Socket::effectiveMaxFor(const std::string &rawRequest) const {
   std::string url = extractRequestUrl(rawRequest);
   LocationBlock loc = matchLocation(_locations, url);
@@ -233,159 +300,124 @@ std::string Socket::buildNotFound() {
   return r.build();
 }
 
+std::string Socket::checkBodyLimits(const std::string &rawRequest,
+                                    long declaredLen) const {
+  long effectiveMax = effectiveMaxFor(rawRequest);
+  if (effectiveMax <= 0)
+    return "";
+  if (declaredLen > effectiveMax)
+    return simpleResponse(413, "Payload Too Large");
+  if (static_cast<long>(requestBodyLength(rawRequest)) > effectiveMax)
+    return simpleResponse(413, "Payload Too Large");
+  return "";
+}
+
+std::string Socket::runCgi(const std::string &url, const LocationBlock &loc,
+                           const std::string &rawRequest,
+                           const std::string &queryString, size_t extIdx) {
+  std::string filePath = resolvePath(url, loc, _docRoot);
+
+  std::string interpreter;
+  if (extIdx < loc.cgi_path.size())
+    interpreter = loc.cgi_path[extIdx];
+  else if (!loc.cgi_path.empty())
+    interpreter = loc.cgi_path[0];
+
+  std::vector<int> fdsToClose;
+  if (_fd != -1)
+    fdsToClose.push_back(_fd);
+  if (_epollFd != -1)
+    fdsToClose.push_back(_epollFd);
+  for (std::map<int, ClientSession>::const_iterator it = active_clients.begin();
+       it != active_clients.end(); ++it)
+    fdsToClose.push_back(it->first);
+
+  Parsercgi cgi;
+  return cgi.execute(interpreter, filePath, rawRequest, queryString, _ip, _port,
+                     fdsToClose);
+}
+
+bool Socket::resolveDirectory(std::string &filePath, const std::string &url,
+                              const LocationBlock &loc, std::string &out) {
+  std::string indexFile = !loc.index.empty() ? loc.index : _indexFile;
+  std::string withIndex = filePath;
+  if (!withIndex.empty() && withIndex[withIndex.size() - 1] != '/')
+    withIndex += '/';
+  withIndex += indexFile;
+
+  if (ParseResponse::fileExists(withIndex)) {
+    filePath = withIndex;
+    return false;
+  }
+
+  if (loc.autoindex && (url == loc.path || url + "/" == loc.path ||
+                        url == loc.path + "/")) {
+    std::string urlPath = url;
+    if (urlPath.empty() || urlPath[urlPath.size() - 1] != '/')
+      urlPath += '/';
+    ParseResponse r;
+    r.setStatus(200, "OK");
+    r.setHeader("Content-Type", "text/html");
+    r.setBody(generateAutoindex(filePath, urlPath));
+    out = r.build();
+    return true;
+  }
+
+  out = simpleResponse(404, "Not Found");
+  return true;
+}
+
 std::string Socket::routeRequest(const std::string &rawRequest) {
   ParseInputRequest parser;
   parser.parse(rawRequest);
 
   std::string method = parser.getMethod();
   std::string url = parser.getUrl();
-  std::string queryString;
-  size_t q = url.find('?');
-  if (q != std::string::npos) {
-    queryString = url.substr(q + 1);
-    url = url.substr(0, q);
-  }
+  std::string queryString = takeQuery(url);
 
   if (method != "GET" && method != "POST" && method != "DELETE" &&
-      method != "PUT" && method != "HEAD") {
-    ParseResponse r;
-    r.setStatus(405, "Method Not Allowed");
-    r.setHeader("Allow", "GET, POST, DELETE, PUT, HEAD");
-    r.setBody("");
-    return r.build();
-  }
+      method != "PUT" && method != "HEAD")
+    return simpleResponse(405, "Method Not Allowed", "Allow",
+                          "GET, POST, DELETE, PUT, HEAD");
 
   LocationBlock loc = matchLocation(_locations, url);
 
-  long effectiveMax = effectiveMaxFor(rawRequest);
-
-  long declaredLen = parser.getContentLength();
-  if (effectiveMax > 0 && declaredLen > effectiveMax) {
-    ParseResponse r;
-    r.setStatus(413, "Payload Too Large");
-    r.setBody("");
-    return r.build();
-  }
-
-  size_t bodyStart = rawRequest.find("\r\n\r\n");
-  size_t bodyLen;
-  if (ParseInputRequest::isChunked(rawRequest))
-    bodyLen = ParseInputRequest::decodedChunkedSize(rawRequest);
-  else
-    bodyLen =
-        (bodyStart == std::string::npos) ? 0 : rawRequest.size() - bodyStart - 4;
-  if (effectiveMax > 0 && static_cast<long>(bodyLen) > effectiveMax) {
-    ParseResponse r;
-    r.setStatus(413, "Payload Too Large");
-    r.setBody("");
-    return r.build();
-  }
+  std::string tooLarge = checkBodyLimits(rawRequest, parser.getContentLength());
+  if (!tooLarge.empty())
+    return tooLarge;
 
   std::vector<std::string> methods = loc.allow_methods;
-  if (methods.empty()) {
+  if (methods.empty())
     methods.push_back("GET");
-  }
-  if (!methodAllowed(methods, method)) {
-    ParseResponse r;
-    r.setStatus(405, "Method Not Allowed");
-    std::string allow;
-    for (size_t i = 0; i < methods.size(); ++i) {
-      if (i)
-        allow += ", ";
-      allow += methods[i];
-    }
-    r.setHeader("Allow", allow);
-    r.setBody("");
-    return r.build();
-  }
+  if (!methodAllowed(methods, method))
+    return simpleResponse(405, "Method Not Allowed", "Allow",
+                          joinMethods(methods));
 
-  if (!loc.return_path.empty()) {
-    ParseResponse r;
-    r.setStatus(302, "Found");
-    r.setHeader("Location", loc.return_path);
-    r.setBody("");
-    return r.build();
-  }
+  if (!loc.return_path.empty())
+    return simpleResponse(302, "Found", "Location", loc.return_path);
 
   if (method == "POST" && !loc.cgi_ext.empty()) {
-    for (size_t i = 0; i < loc.cgi_ext.size(); ++i) {
-      const std::string &ext = loc.cgi_ext[i];
-      if (endsWith(url, ext)) {
-        std::string filePath = resolvePath(url, loc, _docRoot);
-        std::string interpreter;
-        if (i < loc.cgi_path.size())
-          interpreter = loc.cgi_path[i];
-        else if (!loc.cgi_path.empty())
-          interpreter = loc.cgi_path[0];
-        std::vector<int> fdsToClose;
-        if (_fd != -1)
-          fdsToClose.push_back(_fd);
-        if (_epollFd != -1)
-          fdsToClose.push_back(_epollFd);
-        for (std::map<int, ClientSession>::const_iterator it =
-                 active_clients.begin();
-             it != active_clients.end(); ++it)
-          fdsToClose.push_back(it->first);
-        Parsercgi cgi;
-        return cgi.execute(interpreter, filePath, rawRequest, queryString,
-                           _ip, _port, fdsToClose);
-      }
-    }
+    int extIdx = findCgiExtIndex(loc, url);
+    if (extIdx != -1)
+      return runCgi(url, loc, rawRequest, queryString,
+                    static_cast<size_t>(extIdx));
   }
 
   std::string filePath = resolvePath(url, loc, _docRoot);
-  if (filePath.find("..") != std::string::npos) {
-    ParseResponse r;
-    r.setStatus(403, "Forbidden");
-    r.setBody("");
-    return r.build();
-  }
+  if (filePath.find("..") != std::string::npos)
+    return simpleResponse(403, "Forbidden");
 
   if (isDirectory(filePath)) {
-    std::string indexFile = !loc.index.empty() ? loc.index : _indexFile;
-    std::string withIndex = filePath;
-    if (!withIndex.empty() && withIndex[withIndex.size() - 1] != '/')
-      withIndex += '/';
-    withIndex += indexFile;
-    if (ParseResponse::fileExists(withIndex)) {
-      filePath = withIndex;
-    } else if (loc.autoindex &&
-               (url == loc.path || url + "/" == loc.path ||
-                url == loc.path + "/" || url == loc.path)) {
-      std::string urlPath = url;
-      if (urlPath.empty() || urlPath[urlPath.size() - 1] != '/')
-        urlPath += '/';
-      std::string body = generateAutoindex(filePath, urlPath);
-      ParseResponse r;
-      r.setStatus(200, "OK");
-      r.setHeader("Content-Type", "text/html");
-      r.setBody(body);
-      return r.build();
-    } else {
-      ParseResponse r;
-      r.setStatus(404, "Not Found");
-      r.setBody("");
-      return r.build();
-    }
+    std::string response;
+    if (resolveDirectory(filePath, url, loc, response))
+      return response;
   }
 
-  if (!ParseResponse::fileExists(filePath)) {
+  if (!ParseResponse::fileExists(filePath))
     return buildNotFound();
-  }
 
-  if (method == "HEAD") {
-    ParseResponse r;
-    r.setStatus(200, "OK");
-    r.setHeader("Content-Type", ParseResponse::getMimeType(filePath));
-    struct stat st;
-    if (stat(filePath.c_str(), &st) == 0) {
-      std::ostringstream ss;
-      ss << static_cast<long>(st.st_size);
-      r.setHeader("Content-Length", ss.str());
-    }
-    r.setBody("");
-    return r.build();
-  }
+  if (method == "HEAD")
+    return serveHead(filePath);
 
   ParseResponse r;
   r.setBodyFromFile(filePath);
@@ -396,7 +428,13 @@ std::string Socket::handleReadRequest(const std::string &rawRequest) {
   return routeRequest(rawRequest);
 }
 
-int Socket::initMonohilo(int listenFd) {
+void Socket::closeClient(int epollFd, int fd) {
+  epoll_ctl(epollFd, EPOLL_CTL_DEL, fd, NULL);
+  close(fd);
+  active_clients.erase(fd);
+}
+
+int Socket::setupEpoll(int listenFd) {
   int epollFd = epoll_create(1);
   if (epollFd == -1) {
     close(listenFd);
@@ -415,32 +453,139 @@ int Socket::initMonohilo(int listenFd) {
     close(epollFd);
     return -1;
   }
+  return epollFd;
+}
 
+void Socket::sweepTimeouts(int epollFd) {
+  if (_readTimeoutSec <= 0)
+    return;
+
+  time_t now = std::time(NULL);
+  std::vector<int> timed_out;
+  for (std::map<int, ClientSession>::iterator it = active_clients.begin();
+       it != active_clients.end(); ++it) {
+    if (now - it->second.last_activity >= _readTimeoutSec)
+      timed_out.push_back(it->first);
+  }
+
+  for (size_t t = 0; t < timed_out.size(); ++t) {
+    int fd = timed_out[t];
+    if (!active_clients[fd].write_buffer.empty())
+      continue;
+    active_clients[fd].write_buffer = simpleResponse(408, "Request Timeout");
+    active_clients[fd].is_response_ready = true;
+    armForWrite(epollFd, fd);
+  }
+}
+
+void Socket::acceptNewClient(int listenFd, int epollFd) {
+  struct sockaddr_in client_addr;
+  socklen_t client_len = sizeof(client_addr);
+  int client_fd =
+      accept(listenFd, (struct sockaddr *)&client_addr, &client_len);
+  if (client_fd == -1)
+    return;
+
+  if (!setNonBlocking(client_fd)) {
+    close(client_fd);
+    return;
+  }
+
+  struct epoll_event client_ev;
+  std::memset(&client_ev, 0, sizeof(client_ev));
+  client_ev.events = EPOLLIN;
+  client_ev.data.fd = client_fd;
+
+  if (epoll_ctl(epollFd, EPOLL_CTL_ADD, client_fd, &client_ev) == -1) {
+    close(client_fd);
+    return;
+  }
+
+  ClientSession session;
+  session.is_response_ready = false;
+  session.last_activity = std::time(NULL);
+  active_clients[client_fd] = session;
+  std::cout << "Nueva conexión aceptada. Socket FD: " << client_fd << std::endl;
+}
+
+bool Socket::rejectIfTooLarge(ClientSession &session, int fd, int epollFd) {
+  long effectiveMax = effectiveMaxFor(session.read_buffer);
+  if (effectiveMax <= 0)
+    return false;
+
+  bool tooLarge;
+  if (ParseInputRequest::isChunked(session.read_buffer)) {
+    size_t decoded = ParseInputRequest::decodedChunkedSize(session.read_buffer);
+    tooLarge = static_cast<long>(decoded) > effectiveMax;
+  } else {
+    long cl = ParseInputRequest().getContentLengthFromRaw(session.read_buffer);
+    tooLarge = cl > effectiveMax;
+  }
+  if (!tooLarge)
+    return false;
+
+  session.write_buffer = simpleResponse(413, "Payload Too Large");
+  session.is_response_ready = true;
+  armForWrite(epollFd, fd);
+  return true;
+}
+
+bool Socket::handleClientRead(int fd, int epollFd) {
+  char temp_buffer[BUFFER_SIZE];
+  ssize_t bytes_recv = recv(fd, temp_buffer, sizeof(temp_buffer) - 1, 0);
+
+  if (bytes_recv == 0) {
+    closeClient(epollFd, fd);
+    return false;
+  }
+  if (bytes_recv < 0) {
+    std::cout << "error de lectura " << std::endl;
+    return true;
+  }
+
+  temp_buffer[bytes_recv] = '\0';
+  ClientSession &session = active_clients[fd];
+  session.read_buffer.append(temp_buffer, bytes_recv);
+  session.last_activity = std::time(NULL);
+
+  if (session.write_buffer.empty() &&
+      session.read_buffer.find("\r\n\r\n") != std::string::npos &&
+      rejectIfTooLarge(session, fd, epollFd))
+    return false;
+
+  if (ParseInputRequest().is_request_complete(session.read_buffer)) {
+    session.write_buffer = handleReadRequest(session.read_buffer);
+    session.is_response_ready = true;
+    session.read_buffer.clear();
+    armForWrite(epollFd, fd);
+  }
+  return true;
+}
+
+void Socket::handleClientWrite(int fd, int epollFd) {
+  std::map<int, ClientSession>::iterator it = active_clients.find(fd);
+  if (it == active_clients.end())
+    return;
+
+  ClientSession &session = it->second;
+  if (!session.is_response_ready || session.write_buffer.empty())
+    return;
+
+  ssize_t bytes_sent =
+      send(fd, session.write_buffer.c_str(), session.write_buffer.size(), 0);
+  if (bytes_sent <= 0)
+    return;
+
+  session.write_buffer.erase(0, bytes_sent);
+  if (session.write_buffer.empty()) {
+    std::cout << "Respuesta HTTP enviada con éxito al FD: " << fd << std::endl;
+    closeClient(epollFd, fd);
+  }
+}
+
+void Socket::runEventLoop(int listenFd, int epollFd) {
   while (true) {
-    if (_readTimeoutSec > 0) {
-      time_t now = std::time(NULL);
-      std::vector<int> timed_out;
-      for (std::map<int, ClientSession>::iterator it = active_clients.begin();
-           it != active_clients.end(); ++it) {
-        if (now - it->second.last_activity >= _readTimeoutSec)
-          timed_out.push_back(it->first);
-      }
-      for (size_t t = 0; t < timed_out.size(); ++t) {
-        int fd = timed_out[t];
-        if (!active_clients[fd].write_buffer.empty())
-          continue;
-        ParseResponse r;
-        r.setStatus(408, "Request Timeout");
-        r.setBody("");
-        active_clients[fd].write_buffer = r.build();
-        active_clients[fd].is_response_ready = true;
-        struct epoll_event ev;
-        std::memset(&ev, 0, sizeof(ev));
-        ev.events = EPOLLIN | EPOLLOUT;
-        ev.data.fd = fd;
-        epoll_ctl(epollFd, EPOLL_CTL_MOD, fd, &ev);
-      }
-    }
+    sweepTimeouts(epollFd);
 
     int nfds = epoll_wait(epollFd, events, MAX_EVENTS, 1000);
     if (nfds == -1) {
@@ -452,125 +597,26 @@ int Socket::initMonohilo(int listenFd) {
       int currentFd = events[i].data.fd;
 
       if (currentFd == listenFd) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
-        int client_fd =
-            accept(listenFd, (struct sockaddr *)&client_addr, &client_len);
-        if (client_fd == -1) {
-          continue;
-        }
-
-        if (!setNonBlocking(client_fd)) {
-          close(client_fd);
-          continue;
-        }
-
-        struct epoll_event client_ev;
-        std::memset(&client_ev, 0, sizeof(client_ev));
-        client_ev.events = EPOLLIN;
-        client_ev.data.fd = client_fd;
-
-        if (epoll_ctl(epollFd, EPOLL_CTL_ADD, client_fd, &client_ev) == -1) {
-          close(client_fd);
-          continue;
-        }
-
-        ClientSession session;
-        session.is_response_ready = false;
-        session.last_activity = std::time(NULL);
-        active_clients[client_fd] = session;
-        std::cout << "Nueva conexión aceptada. Socket FD: " << client_fd
-                  << std::endl;
-      } else {
-        if (events[i].events & EPOLLIN) {
-          char temp_buffer[BUFFER_SIZE];
-          ssize_t bytes_recv =
-              recv(currentFd, temp_buffer, sizeof(temp_buffer) - 1, 0);
-
-          if (bytes_recv > 0) {
-            temp_buffer[bytes_recv] = '\0';
-            ClientSession &session = active_clients[currentFd];
-            session.read_buffer.append(temp_buffer, bytes_recv);
-            session.last_activity = std::time(NULL);
-
-            if (session.write_buffer.empty() &&
-                session.read_buffer.find("\r\n\r\n") != std::string::npos) {
-              long effectiveMax = effectiveMaxFor(session.read_buffer);
-              if (effectiveMax > 0) {
-                bool tooLarge = false;
-                if (ParseInputRequest::isChunked(session.read_buffer)) {
-                  size_t decoded = ParseInputRequest::decodedChunkedSize(
-                      session.read_buffer);
-                  tooLarge = static_cast<long>(decoded) > effectiveMax;
-                } else {
-                  long cl = ParseInputRequest().getContentLengthFromRaw(
-                      session.read_buffer);
-                  tooLarge = cl > effectiveMax;
-                }
-                if (tooLarge) {
-                  ParseResponse r;
-                  r.setStatus(413, "Payload Too Large");
-                  session.write_buffer = r.build();
-                  session.is_response_ready = true;
-                  struct epoll_event client_ev;
-                  std::memset(&client_ev, 0, sizeof(client_ev));
-                  client_ev.events = EPOLLIN | EPOLLOUT;
-                  client_ev.data.fd = currentFd;
-                  epoll_ctl(epollFd, EPOLL_CTL_MOD, currentFd, &client_ev);
-                  continue;
-                }
-              }
-            }
-
-            if (ParseInputRequest().is_request_complete(session.read_buffer)) {
-              session.write_buffer = handleReadRequest(session.read_buffer);
-              session.is_response_ready = true;
-              session.read_buffer.clear();
-
-              struct epoll_event client_ev;
-              std::memset(&client_ev, 0, sizeof(client_ev));
-              client_ev.events = EPOLLIN | EPOLLOUT;
-              client_ev.data.fd = currentFd;
-              epoll_ctl(epollFd, EPOLL_CTL_MOD, currentFd, &client_ev);
-            }
-          } else if (bytes_recv == 0) {
-            epoll_ctl(epollFd, EPOLL_CTL_DEL, currentFd, NULL);
-            close(currentFd);
-            active_clients.erase(currentFd);
-            continue;
-          } else {
-            std::cout << "error de lectura " << std::endl;
-          }
-        }
-
-        if (events[i].events & EPOLLOUT) {
-          std::map<int, ClientSession>::iterator it =
-              active_clients.find(currentFd);
-          if (it != active_clients.end()) {
-            ClientSession &session = it->second;
-
-            if (session.is_response_ready && !session.write_buffer.empty()) {
-              ssize_t bytes_sent = send(currentFd, session.write_buffer.c_str(),
-                                        session.write_buffer.size(), 0);
-
-              if (bytes_sent > 0) {
-                session.write_buffer.erase(0, bytes_sent);
-
-                if (session.write_buffer.empty()) {
-                  std::cout
-                      << "Respuesta HTTP enviada con éxito al FD: " << currentFd
-                      << std::endl;
-                  epoll_ctl(epollFd, EPOLL_CTL_DEL, currentFd, NULL);
-                  close(currentFd);
-                  active_clients.erase(it);
-                }
-              }
-            }
-          }
-        }
+        acceptNewClient(listenFd, epollFd);
+        continue;
       }
+
+      if ((events[i].events & EPOLLIN) && !handleClientRead(currentFd, epollFd))
+        continue;
+
+      if (events[i].events & EPOLLOUT)
+        handleClientWrite(currentFd, epollFd);
     }
   }
+}
+
+int Socket::initMonohilo(int listenFd) {
+  int epollFd = setupEpoll(listenFd);
+  if (epollFd == -1)
+    return -1;
+
+  runEventLoop(listenFd, epollFd);
+
   close(listenFd);
   close(epollFd);
   return 0;

@@ -54,6 +54,23 @@ private:
 
   long effectiveMaxFor(const std::string &rawRequest) const;
 
+  std::string checkBodyLimits(const std::string &rawRequest,
+                              long declaredLen) const;
+  std::string runCgi(const std::string &url, const LocationBlock &loc,
+                     const std::string &rawRequest,
+                     const std::string &queryString, size_t extIdx);
+  bool resolveDirectory(std::string &filePath, const std::string &url,
+                        const LocationBlock &loc, std::string &out);
+
+  int setupEpoll(int listenFd);
+  void runEventLoop(int listenFd, int epollFd);
+  void sweepTimeouts(int epollFd);
+  void acceptNewClient(int listenFd, int epollFd);
+  bool rejectIfTooLarge(ClientSession &session, int fd, int epollFd);
+  bool handleClientRead(int fd, int epollFd);
+  void handleClientWrite(int fd, int epollFd);
+  void closeClient(int epollFd, int fd);
+
 public:
   Socket();
   Socket(int fd, struct sockaddr_in addr);
