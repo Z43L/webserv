@@ -85,7 +85,7 @@ void ParseInputRequest::parse(const std::string &rawInput) {
   } else if (methodStr == "OPTIONS") {
     method = OPTIONS;
   } else {
-    method = static_cast<t_method>(0); // Método desconocido/no soportado
+    method = static_cast<t_method>(0);
   }
 
   size_t headerStart = reqLineEnd + 2;
@@ -172,8 +172,6 @@ bool ParseInputRequest::is_request_complete(const std::string &rawInput) {
 
   std::string headers = rawInput.substr(0, headers_end);
 
-  // Chunked transfer encoding: complete when the terminating 0-length
-  // chunk ("0\r\n\r\n" or "0\r\n<trailers>\r\n") has been received.
   size_t te_pos = headers.find("Transfer-Encoding:");
   if (te_pos == std::string::npos) te_pos = headers.find("transfer-encoding:");
   if (te_pos != std::string::npos) {
@@ -183,7 +181,6 @@ bool ParseInputRequest::is_request_complete(const std::string &rawInput) {
       te_val[i] = static_cast<char>(std::tolower(te_val[i]));
     if (te_val.find("chunked") != std::string::npos) {
       size_t body_start = headers_end + 4;
-      // Walk chunks; if any still pending or malformed, not complete.
       size_t pos = body_start;
       while (pos < rawInput.size()) {
         size_t eol = rawInput.find("\r\n", pos);
@@ -196,7 +193,6 @@ bool ParseInputRequest::is_request_complete(const std::string &rawInput) {
         if (*endptr != '\0' && *endptr != ' ' && *endptr != '\t') return false;
         if (chunk_size < 0) return false;
         if (chunk_size == 0) {
-          // Terminator: skip optional trailers up to the empty line.
           size_t trailer = eol + 2;
           while (trailer < rawInput.size()) {
             size_t tend = rawInput.find("\r\n", trailer);
@@ -315,7 +311,6 @@ std::string ParseInputRequest::decodeChunked(const std::string &raw) {
     if (*endptr != '\0' && *endptr != ' ' && *endptr != '\t') break;
     if (chunk_size < 0) break;
     if (chunk_size == 0) {
-      // Optional trailers (key:value\r\n) followed by \r\n; skip until done.
       size_t trailer = eol + 2;
       while (trailer < raw.size()) {
         size_t tend = raw.find("\r\n", trailer);

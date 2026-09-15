@@ -7,9 +7,6 @@
 #include <exception>
 #include "serverConfig.hpp"
 
-// Thrown internally by the recursive-descent helpers below. It never escapes
-// ConfigParser::parseFile(), which catches it and turns it into a bool +
-// getErrorMessage() so callers (main.cpp) never have to deal with exceptions.
 class ConfigParseException : public std::exception {
     public:
         ConfigParseException(const std::string &message, int line);
@@ -30,17 +27,12 @@ class ConfigParser {
         const std::string &getErrorMessage() const;
 
     private:
-        // Which whitelist isKnownDirective() checks against — 'listen'/'root'/...
-        // are only valid at server scope, 'autoindex'/'alias'/... only inside a location.
         enum DirectiveScope { SCOPE_SERVER, SCOPE_LOCATION };
 
-        // {, }, and ; are always their own token even when glued to a word
-        // (e.g. "8001;"), so the recursive-descent parser below never has to
-        // split a WORD token itself.
         struct Token {
             enum Type { WORD, LBRACE, RBRACE, SEMICOLON } type;
             std::string value;
-            int line; // for error messages
+            int line;
         };
 
         std::vector<Token>        tokens_;
@@ -61,7 +53,6 @@ class ConfigParser {
         static bool parseLongStrict(const std::string &s, long &out);
         static bool parseSizeStrict(const std::string &s, long &out);
 
-        // Not implemented: parser holds file-parsing state, copying is not meaningful.
         ConfigParser(const ConfigParser &other);
         ConfigParser &operator=(const ConfigParser &other);
 };

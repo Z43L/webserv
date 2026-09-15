@@ -18,8 +18,6 @@ struct ClientSession {
   std::string read_buffer;
   std::string write_buffer;
   bool is_response_ready;
-  // timestamp (segundos epoch) del último recv() que aportó bytes. Lo usa
-  // initMonohilo() para cerrar conexiones inactivas tras _readTimeoutSec.
   time_t last_activity;
 };
 
@@ -34,8 +32,6 @@ enum e_socket_state {
 class Socket {
 private:
   int _fd;
-  // fd del epoll del bucle principal. Se guarda como miembro porque el hijo
-  // del CGI tiene que cerrarlo tras el fork (ver Parsercgi::execute).
   int _epollFd;
   int _port;
   std::string _ip;
@@ -49,18 +45,13 @@ private:
   std::vector<LocationBlock> _locations;
   std::vector<ErrorPage>     _errorPages;
   long                       _maxBodySize;
-  // Segundos de inactividad permitidos por cliente antes de cerrar la conexión
-  // con 408 Request Timeout. 0 = sin timeout.
   long                       _readTimeoutSec;
   bool setNonBlocking(int fd);
 
   std::string handleReadRequest(const std::string &rawRequest);
   std::string routeRequest(const std::string &rawRequest);
-  // 404 servido con la error_page configurada si existe.
   std::string buildNotFound();
 
-  // Devuelve el client_max_body_size efectivo para esta request (override de
-  // la location si la hay; si no, _maxBodySize). 0 = sin límite.
   long effectiveMaxFor(const std::string &rawRequest) const;
 
 public:

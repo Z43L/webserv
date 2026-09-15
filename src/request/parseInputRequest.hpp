@@ -4,7 +4,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
-// template <typename T>
 class ParseInputRequest {
   typedef enum e_method {
     GET = 7171,

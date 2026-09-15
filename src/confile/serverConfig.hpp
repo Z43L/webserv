@@ -4,15 +4,11 @@
 #include <string>
 #include <vector>
 
-// One (code, path) pair. A single 'error_page 404 500 /x.html;' directive
-// expands into two ErrorPage entries sharing the same path.
 struct ErrorPage {
     int         code;
     std::string path;
 };
 
-// Mirrors one 'location <path> { ... }' block, including the special
-// 'location cgi-bin { ... }' block (cgi_path/cgi_ext are only meaningful there).
 struct LocationBlock {
     LocationBlock() : autoindex(false), client_max_body_size(-1) {}
 
@@ -30,12 +26,6 @@ struct LocationBlock {
 
 class ServerConfig {
     public:
-        // listen_port stays -1 until 'listen' is parsed; ConfigParser::validateMandatoryFields
-        // checks for that sentinel to detect a missing mandatory directive.
-        // client_max_body_size defaults to 0 (unlimited) so the server only
-        // caps body sizes when the operator sets one explicitly (server-level
-        // or per-location). Locations with no override inherit this value.
-        // client_read_timeout_seconds defaults to 30; 0 disables the timeout.
         ServerConfig()
             : listen_port(-1), host("0.0.0.0"), index("index.html"),
               client_max_body_size(0), client_read_timeout_seconds(30) {}

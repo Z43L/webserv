@@ -24,8 +24,6 @@ const std::vector<ServerConfig> &ConfigParser::getServers() const { return this-
 
 const std::string &ConfigParser::getErrorMessage() const { return this->error_message_; }
 
-// strtol + endptr check instead of atoi(), which silently returns 0 on
-// garbage input (e.g. "listen abc;" would become port 0 with atoi()).
 bool ConfigParser::parseIntStrict(const std::string &s, int &out)
 {
     if (s.empty())
@@ -59,7 +57,6 @@ bool ConfigParser::parseSizeStrict(const std::string &s, long &out)
     if (value < 0)
         return false;
     
-    // Handle size suffixes: M (megabytes), K (kilobytes), G (gigabytes)
     if (*endptr != '\0')
     {
         std::string suffix(endptr);
@@ -70,15 +67,12 @@ bool ConfigParser::parseSizeStrict(const std::string &s, long &out)
         else if (suffix == "G")
             value *= 1024 * 1024 * 1024;
         else
-            return false; // Invalid suffix
+            return false;
     }
     out = value;
     return true;
 }
 
-// Whitelist check so a typo'd or unsupported directive is rejected with a
-// clear error instead of being silently ignored (or, worse, silently doing
-// nothing the way the old stub's tokenizer loop did).
 bool ConfigParser::isKnownDirective(const std::string &word, DirectiveScope scope) const
 {
     static const char *serverDirectives[] = {
@@ -100,11 +94,6 @@ bool ConfigParser::isKnownDirective(const std::string &word, DirectiveScope scop
     return false;
 }
 
-// Hand-rolled char-by-char scan rather than line + stringstream: values are
-// often glued directly to punctuation (e.g. "8001;", ".py .sh"), so splitting
-// on whitespace alone would swallow "8001;" as a single word instead of the
-// two tokens "8001" and ";". Scanning char-by-char lets {, }, ; be recognized
-// as delimiters no matter what they're touching.
 std::vector<ConfigParser::Token> ConfigParser::tokenize(std::ifstream &file)
 {
     std::vector<Token> tokens;
@@ -118,7 +107,6 @@ std::vector<ConfigParser::Token> ConfigParser::tokenize(std::ifstream &file)
         if (c == '\n' || c == ' ' || c == '\t' || c == '\r' ||
             c == '{' || c == '}' || c == ';' || c == '#')
         {
-            // Any delimiter first flushes whatever word was being accumulated.
             if (inWord)
             {
                 Token t;
@@ -141,8 +129,6 @@ std::vector<ConfigParser::Token> ConfigParser::tokenize(std::ifstream &file)
             }
             else if (c == '#')
             {
-                // Comment: discard everything up to (and including) the next
-                // newline, or EOF if the comment is on the last line.
                 char cc;
                 while (file.get(cc) && cc != '\n') { }
                 if (!file.eof())
@@ -167,10 +153,6 @@ std::vector<ConfigParser::Token> ConfigParser::tokenize(std::ifstream &file)
     return tokens;
 }
 
-// Consumes every WORD token starting at pos (the directive's arguments) and
-// the terminating ';', advancing pos past it. Shared by both
-// parseServerDirective and parseLocationDirective since 'name value+ ;' is
-// the shape of every directive regardless of scope.
 std::vector<std::string> ConfigParser::collectValuesUntilSemicolon(size_t &pos, const std::string &directive)
 {
     std::vector<std::string> values;
@@ -247,8 +229,6 @@ void ConfigParser::parseServerDirective(size_t &pos, ServerConfig &sc, const std
     {
         if (values.size() < 2)
             throw ConfigParseException("'error_page' expects one or more codes followed by a path", directiveLine);
-        // Last value is the path; every value before it is a status code
-        // sharing that same path (nginx's "error_page 404 500 /x.html;" form).
         std::string path = values[values.size() - 1];
         for (size_t i = 0; i + 1 < values.size(); i++)
         {
@@ -323,10 +303,6 @@ void ConfigParser::parseLocationDirective(size_t &pos, LocationBlock &loc, const
     }
 }
 
-// Called with pos already past the 'location' keyword. Recursion (via the
-// pos cursor being passed by reference through parseServerBlock) means each
-// block consumes tokens up to its own matching '}' and returns, so nesting
-// 'server { location { } }' needs no manual brace-depth counter.
 LocationBlock ConfigParser::parseLocationBlock(size_t &pos)
 {
     LocationBlock loc;
@@ -362,7 +338,6 @@ LocationBlock ConfigParser::parseLocationBlock(size_t &pos)
     return loc;
 }
 
-// Called with pos pointing at the 'server' keyword itself.
 ServerConfig ConfigParser::parseServerBlock(size_t &pos)
 {
     ServerConfig sc;
@@ -407,9 +382,6 @@ void ConfigParser::validateMandatoryFields(const ServerConfig &sc, int serverLin
         throw ConfigParseException("server block missing mandatory 'root' directive", serverLine);
 }
 
-// Top-level grammar: the whole file is just one or more 'server { ... }'
-// blocks back to back (supports multi-server/virtual-host configs later
-// without any change to this loop).
 void ConfigParser::parseTokens()
 {
     size_t pos = 0;
@@ -426,12 +398,6 @@ void ConfigParser::parseTokens()
     }
 }
 
-// The only public entry point that touches parsing. It is the exception
-// boundary: everything below (tokenize/parseTokens/...) throws
-// ConfigParseException on any malformed input, but that never escapes past
-// here — callers only ever see a bool + getErrorMessage(), matching the rest
-// of the codebase's error-handling style and guaranteeing a bad config file
-// can't crash the process.
 bool ConfigParser::parseFile(const std::string &filename)
 {
     std::ifstream file(filename.c_str());

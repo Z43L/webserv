@@ -15,10 +15,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Returns the value of header `name` from rawRequest (case-insensitive),
-// or "" if not present. Used to forward HTTP_* environment variables.
-// Only the header block is scanned: the request line has no header of its own
-// and a line of the body must never be mistaken for one.
 static std::string getHeaderValue(const std::string &raw, const std::string &name) {
   std::string lowerName = name;
   for (size_t i = 0; i < lowerName.size(); ++i)
@@ -75,8 +71,6 @@ static std::string cgiError(int code, const std::string &message) {
   return r.build();
 }
 
-// Build a null-terminated envp suitable for execve from a vector of
-// "KEY=VALUE" strings.
 static char **buildEnvp(const std::vector<std::string> &env) {
   char **e = new char *[env.size() + 1];
   for (size_t i = 0; i < env.size(); ++i)
@@ -90,10 +84,6 @@ static void freeEnvp(char **e) {
   delete[] e;
 }
 
-// Convert the CGI stdout into a status line + the original headers/body.
-// We pass the CGI output through as-is when it looks like a full HTTP
-// response, but the standard CGI contract says CGI only writes headers
-// followed by a blank line and a body, so we synthesize "HTTP/1.1 200 OK".
 static std::string buildHttpResponse(const std::string &cgiOutput) {
   size_t sep = cgiOutput.find("\r\n\r\n");
   if (sep == std::string::npos)
@@ -160,7 +150,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
                               const std::string &serverHost,
                               int serverPort,
                               const std::vector<int> &fdsToClose) {
-  // Método y URL salen de la request line, no de las cabeceras.
   std::string reqMethod;
   std::string urlPath;
   size_t rl = rawRequest.find("\r\n");
@@ -179,15 +168,11 @@ std::string Parsercgi::execute(const std::string &interpreter,
   if (reqMethod.empty())
     reqMethod = "POST";
 
-  // SCRIPT_NAME es la ruta URL sin query; REQUEST_URI conserva la original.
   std::string scriptUrl = urlPath;
   size_t qm = scriptUrl.find('?');
   if (qm != std::string::npos)
     scriptUrl = scriptUrl.substr(0, qm);
 
-  // El body se des-chunkea aquí, antes del fork, porque el hijo necesita su
-  // tamaño real para CONTENT_LENGTH: una petición chunked no trae cabecera
-  // Content-Length, y un CGI conforme a CGI/1.1 leería 0 bytes de stdin.
   std::string body = extractBody(rawRequest);
   std::ostringstream clSS;
   clSS << body.size();
@@ -212,7 +197,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
   }
 
   if (pid == 0) {
-    // Child.
     close(inWrite);
     close(outRead);
     dup2(inRead, 0);
@@ -220,9 +204,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
     close(inRead);
     close(outWrite);
 
-    // Los fds del servidor se heredan en el fork. Hay que cerrarlos a mano:
-    // el subject solo permite fcntl(fd, F_SETFL, O_NONBLOCK), así que no
-    // podemos marcarlos FD_CLOEXEC.
     for (size_t i = 0; i < fdsToClose.size(); ++i) {
       if (fdsToClose[i] > 2)
         close(fdsToClose[i]);
@@ -259,9 +240,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
     env.push_back("GATEWAY_INTERFACE=CGI/1.1");
     env.push_back("REDIRECT_STATUS=200");
 
-    // Forward every request header as HTTP_* env vars (RFC 3875 §4.1.18).
-    // Hard-coding a short whitelist would silently drop headers like
-    // X-SECRET-HEADER-FOR-TEST that the CGI may rely on.
     {
       size_t hdrLimit = rawRequest.find("\r\n\r\n");
       if (hdrLimit == std::string::npos) hdrLimit = rawRequest.size();
@@ -285,7 +263,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
                   val[val.size() - 1] == '\r'))
             val.erase(val.size() - 1, 1);
 
-          // CGI/1.1 §4.1.18: header name → uppercase, '-' → '_', prefix HTTP_.
           std::string envKey = "HTTP_";
           for (size_t j = 0; j < key.size(); ++j) {
             char ch = key[j];
@@ -301,9 +278,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
 
     char **envp = buildEnvp(env);
 
-    // El CGI debe ejecutarse en el directorio del script para que sus accesos
-    // por ruta relativa funcionen; tras el chdir el script se referencia como
-    // "./<fichero>".
     std::string scriptFile = scriptPath;
     size_t slash = scriptPath.rfind('/');
     if (slash != std::string::npos) {
@@ -325,26 +299,18 @@ std::string Parsercgi::execute(const std::string &interpreter,
 
     execve(argv[0], argv, envp);
 
-    // If execve returns, it failed.
     freeEnvp(envp);
     for (size_t i = 0; argv[i]; ++i) std::free(argv[i]);
     delete[] argv;
     _exit(127);
   }
 
-  // Parent.
   close(inRead);
   close(outWrite);
 
-  // Los dos pipes se atienden a la vez con un solo poll(). Escribir el body
-  // entero antes de leer la salida provoca un abrazo mortal: el CGI llena su
-  // pipe de stdout (64 KB) y se bloquea, deja de leer stdin, el pipe de
-  // entrada se llena y el servidor se bloquea también.
   fcntl(inWrite, F_SETFL, O_NONBLOCK);
   fcntl(outRead, F_SETFL, O_NONBLOCK);
 
-  // Un body vacío se señaliza cerrando stdin del CGI de inmediato: el EOF es
-  // lo que hace terminar a los CGI que leen hasta el final.
   if (body.empty()) {
     close(inWrite);
     inWrite = -1;
@@ -388,8 +354,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
             inWrite = -1;
           }
         } else {
-          // El CGI cerró stdin sin consumir todo el body: no es un error,
-          // se deja de escribir y se sigue drenando su salida.
           close(inWrite);
           inWrite = -1;
         }
@@ -425,9 +389,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
     return cgiError(504, "Gateway Timeout");
   }
 
-  // stdout del CGI está en EOF, así que normalmente ya ha terminado, pero un
-  // proceso puede cerrar stdout y seguir vivo: se espera sin bloquear y se
-  // mata si se pasa del margen.
   bool reaped = false;
   time_t waitUntil = time(NULL) + 2;
   while (time(NULL) <= waitUntil) {
@@ -444,8 +405,6 @@ std::string Parsercgi::execute(const std::string &interpreter,
     return cgiError(504, "Gateway Timeout");
   }
 
-  // 127 es el código con el que sale el hijo cuando execve falla (intérprete
-  // inexistente o sin permiso de ejecución).
   if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
     return cgiError(502, "Bad Gateway");
 

@@ -5,9 +5,6 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-  // Sin esto, escribir en el pipe de un CGI que ya salió (o en el socket de un
-  // cliente que se ha ido) mata el proceso con SIGPIPE. Los errores se detectan
-  // por el valor de retorno de write/send.
   std::signal(SIGPIPE, SIG_IGN);
 
   if (argc > 2) {

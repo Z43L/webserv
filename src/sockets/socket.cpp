@@ -157,8 +157,6 @@ static bool methodAllowed(const std::vector<std::string> &methods,
   return false;
 }
 
-// Returns the location with the longest matching prefix. Empty LocationBlock
-// (path == "") means "no location matched, use server-level directives".
 static LocationBlock matchLocation(const std::vector<LocationBlock> &locs,
                                    const std::string &url) {
   LocationBlock best;
@@ -178,8 +176,6 @@ static LocationBlock matchLocation(const std::vector<LocationBlock> &locs,
   return best;
 }
 
-// Build the on-disk path for url under the active location (alias replaces
-// the prefix; root appends). Returns "" if no location matched.
 static std::string resolvePath(const std::string &url,
                                const LocationBlock &loc,
                                const std::string &serverRoot) {
@@ -197,10 +193,6 @@ static std::string resolvePath(const std::string &url,
   return serverRoot + rest;
 }
 
-// Extrae la URL (sin query string) de la primera línea de un raw request sin
-// construir un ParseInputRequest completo. Se usa para resolver la location
-// dentro del rechazo temprano de 413 y para el helper effectiveMaxFor().
-// Devuelve "" si la request está malformada.
 static std::string extractRequestUrl(const std::string &raw) {
   size_t eol = raw.find("\r\n");
   if (eol == std::string::npos) eol = raw.size();
@@ -230,8 +222,6 @@ std::string Socket::buildNotFound() {
       std::string p = _docRoot + _errorPages[i].path;
       if (ParseResponse::fileExists(p)) {
         r.setBodyFromFile(p);
-        // setBodyFromFile fija 404 solo si el fichero falla; el estado se
-        // reafirma aquí porque la página existe y sirve como cuerpo del 404.
         r.setStatus(404, "Not Found");
       } else {
         r.setBody("");
@@ -267,12 +257,8 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
 
   LocationBlock loc = matchLocation(_locations, url);
 
-  // max_body enforcement: a location can override the server-wide limit
-  // (client_max_body_size -1 means "inherit from server"); a value of 0
-  // means "no limit". Use whichever is in scope when validating the body.
   long effectiveMax = effectiveMaxFor(rawRequest);
 
-  // max_body enforcement: Content-Length must not exceed client_max_body_size.
   long declaredLen = parser.getContentLength();
   if (effectiveMax > 0 && declaredLen > effectiveMax) {
     ParseResponse r;
@@ -281,8 +267,6 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     return r.build();
   }
 
-  // En chunked los bytes crudos incluyen el framing de los chunks, así que el
-  // límite se compara contra el tamaño ya decodificado.
   size_t bodyStart = rawRequest.find("\r\n\r\n");
   size_t bodyLen;
   if (ParseInputRequest::isChunked(rawRequest))
@@ -296,7 +280,6 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     r.setBody("");
     return r.build();
   }
-
 
   std::vector<std::string> methods = loc.allow_methods;
   if (methods.empty()) {
@@ -316,7 +299,6 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     return r.build();
   }
 
-  // `return` directive: redirect.
   if (!loc.return_path.empty()) {
     ParseResponse r;
     r.setStatus(302, "Found");
@@ -325,24 +307,16 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     return r.build();
   }
 
-  // CGI dispatch: if method is POST and the URL extension is in the
-  // location's cgi_ext list, run the matching interpreter regardless of
-  // whether the script file actually exists on disk — the CGI itself
-  // decides what to do with the request (matching how Apache's mod_cgi
-  // and nginx's fastcgi_pass behave for an extension-based dispatch).
   if (method == "POST" && !loc.cgi_ext.empty()) {
     for (size_t i = 0; i < loc.cgi_ext.size(); ++i) {
       const std::string &ext = loc.cgi_ext[i];
       if (endsWith(url, ext)) {
         std::string filePath = resolvePath(url, loc, _docRoot);
-        // interpreter is the i-th entry in cgi_path (paired by index).
         std::string interpreter;
         if (i < loc.cgi_path.size())
           interpreter = loc.cgi_path[i];
         else if (!loc.cgi_path.empty())
           interpreter = loc.cgi_path[0];
-        // Descriptores del servidor que el hijo hereda del fork y debe cerrar
-        // antes del execve, o un CGI colgado mantiene el puerto en LISTEN.
         std::vector<int> fdsToClose;
         if (_fd != -1)
           fdsToClose.push_back(_fd);
@@ -359,7 +333,6 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     }
   }
 
-  // File serving.
   std::string filePath = resolvePath(url, loc, _docRoot);
   if (filePath.find("..") != std::string::npos) {
     ParseResponse r;
@@ -368,12 +341,6 @@ std::string Socket::routeRequest(const std::string &rawRequest) {
     return r.build();
   }
 
-  // Directory handling: look for the configured index file inside the
-  // directory; if missing and the request is for the location root, fall
-  // back to autoindex (only when explicitly enabled for this location).
-  // For sub-directories without an index file we return 404: the user asked
-  // for `<dir>/<sub>` and that path resolves to a directory with no
-  // indexable entry, so silently listing the contents is not what was asked.
   if (isDirectory(filePath)) {
     std::string indexFile = !loc.index.empty() ? loc.index : _indexFile;
     std::string withIndex = filePath;
@@ -450,9 +417,6 @@ int Socket::initMonohilo(int listenFd) {
   }
 
   while (true) {
-    // Cerrar conexiones inactivas: si un cliente abrió TCP y dejó de enviar
-    // datos durante más de _readTimeoutSec (0 = sin timeout), respondemos
-    // 408 Request Timeout y liberamos el fd antes del próximo epoll_wait.
     if (_readTimeoutSec > 0) {
       time_t now = std::time(NULL);
       std::vector<int> timed_out;
@@ -529,16 +493,6 @@ int Socket::initMonohilo(int listenFd) {
             session.read_buffer.append(temp_buffer, bytes_recv);
             session.last_activity = std::time(NULL);
 
-            // If the headers have arrived and Content-Length already exceeds
-            // the server-wide limit, reject immediately rather than waiting
-            // for the (possibly never-arriving) full body. The per-location
-            // override is applied later in routeRequest, so this early
-            // reject only fires when the operator has set a server-level
-            // cap that the request would clearly violate.
-            // If the headers have arrived and the declared body size already
-            // exceeds the effective limit (server cap, or location override if
-            // any), reject immediately rather than waiting for the (possibly
-            // never-arriving) full body.
             if (session.write_buffer.empty() &&
                 session.read_buffer.find("\r\n\r\n") != std::string::npos) {
               long effectiveMax = effectiveMaxFor(session.read_buffer);
