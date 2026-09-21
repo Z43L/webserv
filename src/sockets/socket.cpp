@@ -16,12 +16,12 @@
 Socket::Socket()
     : _fd(-1), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_LISTENING),
       _isNonBlocking(false), _docRoot("./web"), _indexFile("index.html"),
-      _maxBodySize(0), _readTimeoutSec(30) {}
+      _maxBodySize(0), _readTimeoutSec(0) {}
 
 Socket::Socket(int fd, struct sockaddr_in addr)
     : _fd(fd), _epollFd(-1), _port(0), _ip(""), _state(SOCKET_READING),
       _isNonBlocking(true), addr(addr), _docRoot("./web"),
-      _indexFile("index.html"), _maxBodySize(0), _readTimeoutSec(30) {}
+      _indexFile("index.html"), _maxBodySize(0), _readTimeoutSec(0) {}
 
 Socket::~Socket() { this->closeSocket(); }
 
@@ -505,7 +505,6 @@ void Socket::acceptNewClient(int listenFd, int epollFd) {
   session.is_response_ready = false;
   session.last_activity = std::time(NULL);
   active_clients[client_fd] = session;
-  std::cout << "Nueva conexión aceptada. Socket FD: " << client_fd << std::endl;
 }
 
 bool Socket::rejectIfTooLarge(ClientSession &session, int fd, int epollFd) {
@@ -578,7 +577,6 @@ void Socket::handleClientWrite(int fd, int epollFd) {
 
   session.write_buffer.erase(0, bytes_sent);
   if (session.write_buffer.empty()) {
-    std::cout << "Respuesta HTTP enviada con éxito al FD: " << fd << std::endl;
     closeClient(epollFd, fd);
   }
 }
