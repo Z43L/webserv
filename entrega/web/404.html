@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>404 - Not Found</title>
+    <style>
+        body { background: #0a0a0a; color: #00ff00; font-family: 'Courier New', monospace; margin: 0; padding: 50px; }
+        .header { color: red; text-align: center; font-size: 3em; font-weight: bold; margin-bottom: 20px; }
+        .terminal { border: 1px solid #333; padding: 20px; min-height: 400px; }
+        #output { white-space: pre-wrap; margin-bottom: 10px; }
+        #cmd { background: transparent; border: none; color: #00ff00; width: 100%; outline: none; font-family: inherit; font-size: 1.2em; }
+    </style>
+</head>
+<body>
+    <div class="header">404</div>
+    <div class="terminal">
+        <div id="output">Archivo no encontrado. Usa 'cd index.html' para volver.</div>
+        <input type="text" id="cmd" autofocus autocomplete="off">
+    </div>
+    <script>
+        const cmdInput = document.getElementById('cmd');
+        const output = document.getElementById('output');
+
+        cmdInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const val = cmdInput.value.trim();
+                if (val === 'cd index.html' || val === 'cd ..') {
+                    window.location.href = 'index.html';
+                } else {
+                    output.innerHTML += '<br>> ' + val + '<br>Comando denegado. Solo puedes usar: cd index.html';
+                }
+                cmdInput.value = '';
+            }
+        });
+    </script>
+</body>
+</html>

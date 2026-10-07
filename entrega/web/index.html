@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <title>Terminal</title>
+    <script src="sha256.min.js"></script>
+    <style>
+        body { 
+            background: #0a0a0a; 
+            color: #00ff00; 
+            font-family: 'Courier New', monospace; 
+            margin: 0; 
+            padding: 50px; 
+        }
+        .header { 
+            color: red; 
+            text-align: center; 
+            font-size: 3em; 
+            font-weight: bold; 
+            margin-bottom: 20px; 
+        }
+        .terminal { 
+            border: 1px solid #333; 
+            padding: 20px; 
+            min-height: 400px; 
+        }
+        #output { 
+            white-space: pre-wrap; 
+            margin-bottom: 10px; 
+        }
+        #cmd { 
+            background: transparent; 
+            border: none; 
+            color: #00ff00; 
+            width: 100%; 
+            outline: none; 
+            font-family: inherit; 
+            font-size: 1.2em; 
+        }
+        .shatter { 
+            animation: shatter-anim 1s forwards; 
+        }
+        @keyframes shatter-anim { 
+            0% { transform: scale(1); opacity: 1; } 
+            100% { transform: scale(2); opacity: 0; filter: blur(20px); } 
+        }
+    </style>
+</head>
+<body>
+    <div class="header">ROMPEME X 76523b48c20312938c8209a78e9a735637b86433f3cfa34d094c6efa8f1ca4ee</div>
+    <div class="terminal" id="term">
+        <div id="output">Bienvenido al sistema. Escribe 'ls' para ver archivos.</div>
+        <input type="text" id="cmd" autofocus autocomplete="off">
+    </div>
+    
+    <script>
+        const cmdInput = document.getElementById('cmd');
+        const output = document.getElementById('output');
+        const files = ['intro.html', 'sockets.html', 'http.html', 'break.html'];
+
+        cmdInput.addEventListener('keydown', async (e) => {
+            if (e.key === 'Enter') {
+                const parts = cmdInput.value.trim().split(' ');
+                const cmd = parts[0];
+                const arg = parts[1];
+
+                if (cmd === 'ls') {
+                    output.innerHTML += '<br>> ls<br>' + files.filter(f => f !== 'break.html').join('  ');
+                } 
+                else if (cmd === 'cat' && arg) {
+                    if (files.includes(arg)) {
+                        window.location.href = arg;
+                    } else {
+                        output.innerHTML += '<br>> cat ' + arg + '<br>Error: Archivo no encontrado.';
+                    }
+                } 
+                else if (cmd === 'hash' && arg) {
+                    if (files.includes(arg)) {
+                        try {
+                            const response = await fetch(arg);
+                            
+                            // Verificar si la respuesta es exitosa (código 200)
+                            if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                            }
+                            
+                            const text = await response.text();
+                            
+                            const msgBuffer = new TextEncoder().encode(text);
+                            const hashHex = sha256(text)
+                            
+                            output.innerHTML += `<br>> hash ${arg}<br>${hashHex}`;
+
+                            if (arg === 'break.html') {
+                                document.getElementById('term').classList.add('shatter');
+                                setTimeout(() => { window.location.href = 'win.html'; }, 1000);
+                            }
+                        } catch (err) {
+                            output.innerHTML += `<br>> Error al leer el archivo ${arg}: ${err.message}`;
+                            console.log(window.isSecureContext);
+                            console.log(typeof window.crypto);
+                            console.log(typeof window.crypto.subtle);
+                        }
+                    } else {
+                        output.innerHTML += `<br>> Error: Archivo '${arg}' no encontrado.`;
+                    }
+                } 
+                else if (cmd !== '') {
+                    output.innerHTML += '<br>> ' + cmdInput.value + '<br>Comando desconocido.';
+                }
+                
+                cmdInput.value = '';
+                // Hacer scroll hacia abajo en la terminal
+                cmdInput.scrollIntoView();
+            }
+        });
+    </script>
+</body>
+</html>
